@@ -617,6 +617,10 @@ type LLMProfileDTO struct {
 	// 0=继承全局策略 | -1=关闭该层重试 | >0=次数；interval_ms: 0=用默认指数退避 |
 	// >0=改用该固定毫秒间隔。全 0 = 完全跟随全局，即历史行为。
 	Retry db.RetryOverride `json:"retry"`
+	// 인증 방식: ""(API Key) | "chatgpt"(ChatGPT 구독, Sign in with ChatGPT). 구독 프로필의
+	// 연결 상태(토큰 없음)는 chatgpt 에 실린다.
+	AuthMode string                 `json:"auth_mode"`
+	ChatGPT  *db.ProfileOAuthStatus `json:"chatgpt,omitempty"`
 }
 
 func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
@@ -641,6 +645,7 @@ func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
 		MaxTokensField:   p.MaxTokensField,
 		SessionHeaderKey: p.SessionHeaderKey,
 		Retry:            p.Retry,
+		AuthMode:         p.AuthMode,
 	}
 }
 

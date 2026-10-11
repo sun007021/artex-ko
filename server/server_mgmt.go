@@ -25,6 +25,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/siwc"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/skill"
 )
@@ -114,6 +115,7 @@ const (
 
 	// LLM 설정 삭제
 	errMgmtLLMActiveDelete = "현재 활성화된 LLM 설정은 삭제할 수 없습니다. 먼저 다른 설정을 활성화하세요"
+	errMgmtLLMBadAuthMode  = "지원하지 않는 인증 방식입니다"
 	errMgmtLLMRefChanged   = "LLM 설정이 작업이나 대화에서 수정되는 중입니다. 다시 시도하세요"
 	errMgmtLLMRefTimeout   = "LLM 설정 참조가 해제되기를 기다리다 시간이 초과되었습니다. 다시 시도하세요"
 
@@ -1850,7 +1852,21 @@ func (s *Server) pgListProfiles(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"profiles": llmProfileDTOs(ps)})
+	dtos := llmProfileDTOs(ps)
+	// ChatGPT 구독 프로필에는 연결 상태(토큰 없음)를 붙인다.
+	if statuses, err := pg.ListProfileOAuthStatuses(r.Context()); err == nil {
+		for i, p := range ps {
+			if p.AuthMode != db.AuthModeChatGPT {
+				continue
+			}
+			st, ok := statuses[p.ID]
+			if !ok {
+				st = db.ProfileOAuthStatus{Status: db.OAuthStatusDisconnected}
+			}
+			dtos[i].ChatGPT = &st
+		}
+	}
+	writeJSON(w, 200, map[string]any{"profiles": dtos})
 }
 
 func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
@@ -1875,6 +1891,22 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	p := body.LLMProfile
 	p.APIKey = body.APIKey
 	p.Streaming = body.Streaming == nil || *body.Streaming
+	if p.AuthMode != "" && p.AuthMode != db.AuthModeChatGPT {
+		writeErr(w, 400, errMgmtLLMBadAuthMode)
+		return
+	}
+	// 구독(ChatGPT) 프로필: 형식은 openai-responses 로 고정, API Key·base_url·출력 상한·세션
+	// 헤더·비스트리밍은 이 경로에서 쓰지 않으므로 비운다(max_output_tokens 는 지원되지 않는
+	// 요청 필드이고 스트리밍은 항상 켜진다). 모델·추론 강도·컨텍스트 창·속도 제한은 그대로 쓴다.
+	if p.AuthMode == db.AuthModeChatGPT {
+		p.Format, p.BaseURL, p.APIKey = "openai-responses", "", ""
+		p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, p.Streaming = 0, "", "", true
+	}
+	// 구독 → API Key 로 바꾸면 남은 OAuth 자격 증명을 폐기하고 지운다.
+	var prev *db.LLMProfile
+	if p.ID != 0 {
+		prev, _ = pg.ProfileByID(p.ID)
+	}
 	// 输出上限:负数无意义,归零(= 不发送该字段)。字段名开关只有 Chat Completions
 	// 用得上——anthropic 与 openai-responses 各自定死了字段名,存下来只会误导后续读者,
 	// 故非 openai 格式一律清空。未知取值同样清空,避免把 DB CHECK 的报错甩给用户。
@@ -1888,6 +1920,9 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	if prev != nil && prev.AuthMode == db.AuthModeChatGPT && p.AuthMode != db.AuthModeChatGPT {
+		s.dropChatGPTCredentials(r.Context(), prev)
 	}
 	// Editing a profile rebuilds any task pinned to it on its next round. Reapply
 	// the active profile too: the global fallback and explicit task chains must
@@ -1939,6 +1974,13 @@ func (s *Server) pgDeleteProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := pathInt(r, "id")
+	// 삭제되면 OAuth 행도 CASCADE 로 사라지므로, 원격 폐기에 쓸 토큰을 미리 읽어 둔다.
+	var delProf *db.LLMProfile
+	var delRec *siwc.Record
+	if dp, _ := pg.ProfileByID(id); dp != nil && dp.AuthMode == db.AuthModeChatGPT {
+		delProf = dp
+		delRec, _ = s.chatgptSession(dp).Snapshot(r.Context())
+	}
 	if err := pg.DeleteProfileContext(r.Context(), id); err != nil {
 		switch {
 		case errors.Is(err, db.ErrActiveLLMProfileDelete):
@@ -1953,6 +1995,10 @@ func (s *Server) pgDeleteProfile(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 		}
 		return
+	}
+	if delProf != nil {
+		s.cgpt.forget(id)
+		go s.revokeChatGPTTokens(delProf, delRec)
 	}
 	s.invalidateProfileAgents() // drop cached agents for the removed profile
 	s.llmHealth.Reset(id)       // its breaker state is meaningless now (row is FK-cascaded away)

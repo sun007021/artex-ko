@@ -449,6 +449,18 @@ func baseTransport(proxy string) (*http.Transport, error) {
 	return transport, nil
 }
 
+// ProxyHTTPClient builds a plain *http.Client that honours the same explicit-proxy
+// rule as the LLM providers (empty = direct, never the *_PROXY environment
+// variables). The sign-in code uses it so auth.openai.com calls follow a profile's
+// proxy setting too.
+func ProxyHTTPClient(proxy string, timeout time.Duration) (*http.Client, error) {
+	transport, err := baseTransport(proxy)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{Transport: transport, Timeout: timeout}, nil
+}
+
 func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) {
 	transport, err := baseTransport(proxy)
 	if err != nil {
