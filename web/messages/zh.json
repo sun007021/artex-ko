@@ -3244,7 +3244,8 @@
       "priority": "优先级 {priority}",
       "active": "已激活",
       "activate": "设为激活",
-      "deleteAria": "删除配置"
+      "deleteAria": "删除配置",
+      "chatgptBadge": "ChatGPT"
     },
     "health": {
       "noKey": {
@@ -3254,7 +3255,19 @@
       "tripped": "已熔断",
       "trippedCooldown": "已熔断 · {cooldown}",
       "degraded": "异常 · 失败 {fails} 次",
-      "ok": "正常"
+      "ok": "正常",
+      "chatgptLogin": {
+        "label": "需要登录",
+        "hint": "尚未登录 ChatGPT，无法调用"
+      },
+      "chatgptReauth": {
+        "label": "需要重新登录",
+        "hint": "已保存的 ChatGPT 登录已过期或被撤销"
+      },
+      "chatgptNoPlan": {
+        "label": "需要授权",
+        "hint": "未授予 ChatGPT 套餐用量权限，请重新登录并允许"
+      }
     },
     "pool": {
       "title": "LLM 轮询 · 故障转移",
@@ -3397,7 +3410,13 @@
         "created": "已新建：{name}（在卡片上「设为激活」以启用）",
         "savedActive": "已保存，激活配置即时生效，无需重启",
         "saved": "已保存",
-        "saveFailed": "保存失败：{msg}"
+        "saveFailed": "保存失败：{msg}",
+        "apiKeyRequiredSwitch": "要从 ChatGPT 订阅切换为 API Key 方式，请先填写 API Key。保存后会废弃 ChatGPT 登录"
+      },
+      "authMode": {
+        "label": "认证方式",
+        "apikey": "API Key",
+        "chatgpt": "ChatGPT 订阅 (Plus/Pro)"
       }
     },
     "retryLayer": {
@@ -3472,6 +3491,48 @@
         "loadFailed": "读取重试策略失败：{msg}",
         "saved": "已保存，即时生效（正在跑的这一轮调用仍用旧参数）",
         "saveFailed": "保存失败：{msg}"
+      }
+    },
+    "chatgpt": {
+      "title": "ChatGPT 账户",
+      "intro": "使用 ChatGPT Plus/Pro 套餐的用量调用模型。采用 OpenAI 官方的「Sign in with ChatGPT」登录，令牌只保存在本服务器，不会下发到页面。调用额度取决于该 ChatGPT 账户的套餐。",
+      "account": "账户",
+      "noPlanHint": "此次登录未被授予 ChatGPT 套餐用量权限，无法调用。点击「重新授权」重新登录并批准该权限请求。",
+      "reauthHint": "已保存的登录已过期或被撤销，请重新登录。",
+      "saveFirst": "点击登录按钮时会先保存此配置（需要填写名称和模型）。",
+      "status": {
+        "disconnected": "未登录",
+        "connected": "已连接",
+        "reauth": "需要重新登录",
+        "noPlan": "需要授权"
+      },
+      "button": {
+        "login": "使用 ChatGPT 登录",
+        "relogin": "重新登录",
+        "reconsent": "重新授权",
+        "logout": "退出登录"
+      },
+      "waiting": "请在打开的标签页中批准 ChatGPT 登录，完成后会自动连接…",
+      "openLink": "如果没有打开标签页，请用此链接登录",
+      "paste": {
+        "title": "浏览器在另一台电脑上？（远程服务器 / Docker）",
+        "desc": "登录后浏览器会跳转到 {uri}。如果 ARTEX 服务器在别处，该页面将无法打开，这没有关系。此时请复制地址栏中的完整 URL，粘贴到下方。",
+        "placeholder": "http://127.0.0.1:8787/auth/callback?code=…&state=…",
+        "aria": "登录后浏览器跳转到的地址",
+        "submit": "粘贴并完成"
+      },
+      "limits": "此方式不使用 Base URL、API Key、输出 token 上限（max_tokens）、非流式和会话头，因此已隐藏。响应始终为流式，输出长度遵循服务器默认值。",
+      "modelHint": "登录后会加载该账户可用的模型列表（可用右侧刷新按钮重新获取）。也可以手动输入列表中没有的模型。",
+      "effortHint": "作为 Responses API 的 reasoning.effort 发送。各模型支持的强度不同，不匹配的值会在连接测试中报错。默认不发送该值。",
+      "toast": {
+        "loginDone": "ChatGPT 登录完成：{email}",
+        "loginFailed": "ChatGPT 登录失败：{msg}",
+        "pasteFailed": "无法用粘贴的地址完成登录：{msg}",
+        "loggedOut": "已退出 ChatGPT 登录",
+        "loggedOutUnconfirmed": "已删除本服务器上的令牌，但未能确认 OpenAI 端已撤销。如有需要，请在 ChatGPT 设置中断开该应用",
+        "logoutFailed": "退出登录失败：{msg}",
+        "loginFirst": "请先登录 ChatGPT",
+        "testFirst": "测试连接前，请先保存配置并登录 ChatGPT"
       }
     }
   },

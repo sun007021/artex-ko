@@ -20,6 +20,9 @@ import type {
   BatchCategoryItem,
   BatchControlItem,
   ChatAttachment,
+  ChatGPTLoginStart,
+  ChatGPTModel,
+  ChatGPTStatus,
   CommandRecord,
   Company,
   CompanyScopeMutation,
@@ -195,6 +198,19 @@ function mockReport(_task?: string): string {
 - API 에 객체 수준 권한 검증(IDOR)을 추가하고 강력한 JWT 키로 교체합니다.
 
 > (demo) 본 보고서는 mock 데이터로 생성되었으며 화면 데모용입니다.`;
+}
+
+// backendUrl 은 /api 밖의 서버 경로(예: /auth/start)를 브라우저가 직접 열 때 쓰는 URL 이다.
+// 운영(정적 export / Docker)에서는 같은 출처이고, next dev 에서만 Go 백엔드(:8787)로 직접 간다
+// (dev 의 /api 리라이트는 /auth/* 를 전달하지 않는다). 절대 URL 은 그대로 돌려준다.
+export function backendUrl(pathOrUrl: string): string {
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  const base =
+    process.env.NEXT_PUBLIC_SSE_BASE ??
+    (process.env.NODE_ENV !== "production" && typeof window !== "undefined"
+      ? `${window.location.protocol}//${window.location.hostname}:8787`
+      : "");
+  return `${base}${pathOrUrl}`;
 }
 
 export function sseUrl(path: string): string {
@@ -957,6 +973,7 @@ export const api = {
     profile_id?: number,
     streaming = true, // 用该配置真实的收发模式来测，别让"流式能通、非流式不通"漏到会话里
     session_header_key = "", // 非空=测试请求也带该自定义会话头（值为一次性 session id）
+    auth_mode: "" | "chatgpt" = "", // "chatgpt"=已保存的 ChatGPT 구독 프로필(profile_id 필수)로 테스트
   ) =>
     // reply = 模型实际回复(已截断);一个字都不回的配置后端直接判失败
     post<{ ok: boolean; error?: string; latency_ms?: number; model?: string; reply?: string }>("/llm/test", {
@@ -970,6 +987,7 @@ export const api = {
       profile_id,
       streaming,
       session_header_key,
+      auth_mode,
     }),
   llmProfiles: () => get<{ profiles: LLMProfile[] }>("/llm/profiles").then((r) => arr(r.profiles)),
   saveLLMProfile: (p: {
@@ -992,6 +1010,7 @@ export const api = {
     max_tokens_field?: string; // ""=max_tokens(默认) | "max_completion_tokens"（仅 openai 格式）
     session_header_key?: string; // 非空=每次请求带该 HTTP 头，头值=当前会话 session id；""=不发送
     retry?: LLMRetryOverride; // 本配置的重试覆盖；各项留 0 = 跟随全局重试策略
+    auth_mode?: "" | "chatgpt"; // ""=API Key | "chatgpt"=ChatGPT 구독 (서버가 형식·키·base_url 등을 정규화)
   }) => post<{ id: number }>("/llm/profiles", p),
   deleteLLMProfile: (id: string) => del<{ deleted: number }>(`/llm/profiles/${id}`),
   activateLLMProfile: (id: string) => post<{ ok: boolean }>("/llm/profiles/active", { id: Number(id) }),
@@ -1010,6 +1029,21 @@ export const api = {
       proxy,
       profile_id,
     }),
+
+  // ---- ChatGPT 구독 로그인 (Sign in with ChatGPT) ----
+  // 토큰은 서버에만 있고 이 응답들에는 실리지 않는다.
+  chatgptStatus: (profileId: number) => get<ChatGPTStatus>(`/llm/chatgpt/status?profile_id=${profileId}`),
+  chatgptLoginStart: (profileId: number, reconsent = false) =>
+    post<ChatGPTLoginStart>("/llm/chatgpt/login/start", { profile_id: profileId, reconsent }),
+  // 브라우저가 서버와 다른 호스트일 때: 리디렉션된 주소창 URL 을 붙여 넣어 마무리한다.
+  chatgptLoginComplete: (profileId: number, callbackUrl: string) =>
+    post<ChatGPTStatus>("/llm/chatgpt/login/complete", { profile_id: profileId, callback_url: callbackUrl }),
+  chatgptLogout: (profileId: number) =>
+    post<{ ok: boolean; revoked: boolean }>("/llm/chatgpt/logout", { profile_id: profileId }),
+  chatgptModels: (profileId: number) =>
+    get<{ ok: boolean; error?: string; code?: string; models?: ChatGPTModel[] }>(
+      `/llm/chatgpt/models?profile_id=${profileId}`,
+    ),
 
   // ---- agents ----
   agents: () => get<{ agents: Agent[] }>("/agents").then((r) => arr(r.agents)),

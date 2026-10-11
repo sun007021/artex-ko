@@ -2291,6 +2291,39 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/llm/profiles" && m === "GET") return { profiles: D.llmProfiles };
   if (path === "/llm/profiles" && m === "POST") return { id: Number(b.id) || 3 };
   if (path === "/llm/profiles/active") return { ok: true };
+  if (path === "/llm/chatgpt/status")
+    return {
+      profile_id: Number(q.get("profile_id") ?? 3),
+      status: "connected",
+      email: "pentester@example.com",
+      registered: true,
+      plan_usage: true,
+      login: { state: "none" },
+    };
+  if (path === "/llm/chatgpt/login/start")
+    return {
+      auth_url: "https://auth.openai.com/api/accounts/authorize?mock=1",
+      redirect_uri: "http://127.0.0.1:8787/auth/callback",
+      expires_in: 600,
+    };
+  if (path === "/llm/chatgpt/login/complete")
+    return {
+      profile_id: Number(b.profile_id ?? 3),
+      status: "connected",
+      email: "pentester@example.com",
+      registered: true,
+      plan_usage: true,
+      login: { state: "done" },
+    };
+  if (path === "/llm/chatgpt/logout") return { ok: true, revoked: true };
+  if (path === "/llm/chatgpt/models")
+    return {
+      ok: true,
+      models: [
+        { slug: "example-model-a", display_name: "Example model A" },
+        { slug: "example-model-b", display_name: "Example model B" },
+      ],
+    };
   if (path === "/llm/pool" && m === "GET") return D.llmPool;
   if (path === "/llm/pool/reset")
     return { ...D.llmPool, chain: D.llmPool.chain.map((c) => ({ ...c, state: "ok", fails: 0, cooldown_secs: 0 })) };

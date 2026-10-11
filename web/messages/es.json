@@ -3244,7 +3244,8 @@
       "priority": "Prioridad {priority}",
       "active": "Activo",
       "activate": "Establecer como activo",
-      "deleteAria": "Eliminar perfil"
+      "deleteAria": "Eliminar perfil",
+      "chatgptBadge": "ChatGPT"
     },
     "health": {
       "noKey": {
@@ -3254,7 +3255,19 @@
       "tripped": "Circuito abierto",
       "trippedCooldown": "Circuito abierto · {cooldown}",
       "degraded": "Degradado · {fails} fallos",
-      "ok": "Correcto"
+      "ok": "Correcto",
+      "chatgptLogin": {
+        "label": "Inicio de sesión necesario",
+        "hint": "No se ha iniciado sesión en ChatGPT, por lo que no se pueden hacer llamadas"
+      },
+      "chatgptReauth": {
+        "label": "Iniciar sesión de nuevo",
+        "hint": "El inicio de sesión de ChatGPT guardado ha caducado o se revocó"
+      },
+      "chatgptNoPlan": {
+        "label": "Falta permiso",
+        "hint": "No se concedió el uso del plan de ChatGPT. Inicie sesión de nuevo y permítalo"
+      }
     },
     "pool": {
       "title": "Rotación de LLM · failover",
@@ -3397,7 +3410,13 @@
         "created": "Creado: {name} (úselo haciendo clic en «Establecer como activo» en su tarjeta)",
         "savedActive": "Guardado. El perfil activo se aplica de inmediato, sin necesidad de reiniciar",
         "saved": "Guardado",
-        "saveFailed": "Error al guardar: {msg}"
+        "saveFailed": "Error al guardar: {msg}",
+        "apiKeyRequiredSwitch": "Introduzca una API Key para pasar de la suscripción de ChatGPT a la autenticación con API Key. Al guardar se descarta el inicio de sesión de ChatGPT"
+      },
+      "authMode": {
+        "label": "Autenticación",
+        "apikey": "API Key",
+        "chatgpt": "Suscripción de ChatGPT (Plus/Pro)"
       }
     },
     "retryLayer": {
@@ -3472,6 +3491,48 @@
         "loadFailed": "Error al leer la política de reintentos: {msg}",
         "saved": "Guardado. Se aplica de inmediato (una llamada ya en curso sigue usando los valores anteriores)",
         "saveFailed": "Error al guardar: {msg}"
+      }
+    },
+    "chatgpt": {
+      "title": "Cuenta de ChatGPT",
+      "intro": "Llama a los modelos con el uso de su plan ChatGPT Plus/Pro. Usa el flujo oficial «Sign in with ChatGPT» de OpenAI; los tokens se guardan solo en este servidor y nunca se envían a la página. Los límites de uso siguen el plan de esa cuenta de ChatGPT.",
+      "account": "Cuenta",
+      "noPlanHint": "A este inicio de sesión no se le concedió el uso del plan de ChatGPT, por lo que no se pueden hacer llamadas. Use «Permitir de nuevo» para iniciar sesión otra vez y aprobar la solicitud.",
+      "reauthHint": "El inicio de sesión guardado ha caducado o se revocó. Inicie sesión de nuevo.",
+      "saveFirst": "Al pulsar el botón de inicio de sesión se guarda primero este perfil (hacen falta un nombre y un modelo).",
+      "status": {
+        "disconnected": "Sin sesión",
+        "connected": "Conectado",
+        "reauth": "Iniciar sesión de nuevo",
+        "noPlan": "Falta permiso"
+      },
+      "button": {
+        "login": "Iniciar sesión con ChatGPT",
+        "relogin": "Iniciar sesión de nuevo",
+        "reconsent": "Permitir de nuevo",
+        "logout": "Cerrar sesión"
+      },
+      "waiting": "Apruebe el inicio de sesión de ChatGPT en la pestaña que se abrió; se conectará automáticamente…",
+      "openLink": "Si no se abrió ninguna pestaña, inicie sesión con este enlace",
+      "paste": {
+        "title": "¿El navegador está en otro equipo? (servidor remoto / Docker)",
+        "desc": "Tras iniciar sesión, el navegador va a {uri}. Si el servidor de ARTEX está en otro lugar, esa página no cargará, y no pasa nada. Copie entonces la URL completa de la barra de direcciones y péguela abajo.",
+        "placeholder": "http://127.0.0.1:8787/auth/callback?code=…&state=…",
+        "aria": "Dirección a la que redirigió el navegador tras iniciar sesión",
+        "submit": "Terminar al pegar"
+      },
+      "limits": "Este método no usa Base URL, API Key, el límite de tokens de salida (max_tokens), el modo sin streaming ni la cabecera de sesión, por lo que están ocultos. Las respuestas siempre van en streaming y la longitud de salida sigue el valor por defecto del servidor.",
+      "modelHint": "Tras iniciar sesión se carga la lista de modelos que puede usar su cuenta (use el botón de actualizar de la derecha para recargarla). También puede escribir un modelo que no esté en la lista.",
+      "effortHint": "Se envía como reasoning.effort de la Responses API. Los niveles admitidos varían según el modelo, y un valor no admitido aparece como error en la prueba de conexión. Por defecto no se envía ningún valor.",
+      "toast": {
+        "loginDone": "Inicio de sesión de ChatGPT completado: {email}",
+        "loginFailed": "Falló el inicio de sesión de ChatGPT: {msg}",
+        "pasteFailed": "No se pudo completar el inicio de sesión con la dirección pegada: {msg}",
+        "loggedOut": "Sesión de ChatGPT cerrada",
+        "loggedOutUnconfirmed": "Se eliminó el token de este servidor, pero no se pudo confirmar la revocación en OpenAI. Si hace falta, desconecte la aplicación en los ajustes de ChatGPT",
+        "logoutFailed": "No se pudo cerrar la sesión: {msg}",
+        "loginFirst": "Inicie sesión en ChatGPT primero",
+        "testFirst": "Guarde el perfil e inicie sesión en ChatGPT antes de probar la conexión"
       }
     }
   },

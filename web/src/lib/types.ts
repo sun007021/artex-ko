@@ -1059,6 +1059,53 @@ export interface LLMProfile {
   session_header_key?: string;
   // 本配置对重试的覆盖（建连/空响应/同 provider 安全窗口）。留空/全 0 = 跟随全局策略。
   retry?: LLMRetryOverride;
+  // 인증 방식: ""(API Key, 기본) | "chatgpt"(ChatGPT 구독, Sign in with ChatGPT).
+  auth_mode?: "" | "chatgpt";
+  // 구독 프로필의 연결 요약. 토큰은 서버가 절대 내려주지 않는다.
+  chatgpt?: ChatGPTSummary;
+}
+
+// ---- ChatGPT 구독 로그인 ----
+export type ChatGPTConnection = "" | "disconnected" | "connected" | "reauth_required";
+
+// 프로필 목록에 실리는 연결 요약.
+export interface ChatGPTSummary {
+  status: ChatGPTConnection;
+  email?: string;
+  registered: boolean;
+  scopes?: string[];
+  plan_usage: boolean; // chatgpt.tokens.use.direct 가 허가됐는가
+  expires_at?: string;
+  last_error?: string;
+}
+
+// GET /llm/chatgpt/status 및 login/complete 의 응답.
+export interface ChatGPTStatus {
+  profile_id: number;
+  status: ChatGPTConnection;
+  email?: string;
+  registered: boolean;
+  plan_usage: boolean;
+  expires_at?: string;
+  last_error?: string;
+  login: {
+    state: "none" | "pending" | "done" | "error";
+    redirect_uri?: string;
+    expires_in?: number;
+    error?: string; // 현재 언어로 번역된 사용자용 메시지
+    code?: string;
+  };
+}
+
+export interface ChatGPTLoginStart {
+  auth_url: string; // 절대 URL 또는 서버 상대 경로(/auth/start?...)
+  redirect_uri: string;
+  expires_in: number;
+}
+
+export interface ChatGPTModel {
+  slug: string;
+  display_name: string;
 }
 
 // ---- LLM 重试策略 ----
