@@ -464,8 +464,8 @@ func TestChatGPTNewProviderConfig(t *testing.T) {
 	if c := NewChatGPTConfig("m", "", &fakeSource{}); c == a {
 		t.Fatal("different sources must differ")
 	}
-	if NewChatGPTConfig("", "", src).Model == "" {
-		t.Fatal("default model expected")
+	if NewChatGPTConfig(" m ", "", src).Model != "m" || NewChatGPTConfig("", "", src).Model != "" {
+		t.Fatal("model must be trimmed and never defaulted to a hard-coded identifier")
 	}
 	if _, err := NewChatGPTConfig("m", "ftp://nope", src).NewProvider(); err == nil {
 		t.Fatal("bad proxy must be reported")

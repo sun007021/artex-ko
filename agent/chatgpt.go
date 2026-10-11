@@ -56,10 +56,10 @@ type TokenSource interface {
 
 // NewChatGPTConfig 는 구독 프로필용 Config 를 만든다. 형식은 openai-responses 로 고정되고
 // 스트리밍은 항상 켜진다(비스트리밍은 이 경로에서 지원되지 않는다).
+//
+// 모델 식별자는 코드에 두지 않는다: 계정의 모델 목록에서 사용자가 고른 값만 쓰며(서버가 저장 시
+// 필수로 요구한다), 비어 있으면 그대로 비워 둬 요청이 명확하게 거부되게 한다.
 func NewChatGPTConfig(model, proxy string, src TokenSource) Config {
-	if strings.TrimSpace(model) == "" {
-		model = "gpt-5"
-	}
 	return Config{
 		Format: llm.FormatOpenAIResponses, BaseURL: ChatGPTBaseURL, Model: strings.TrimSpace(model),
 		Proxy: strings.TrimSpace(proxy), Stream: true, AuthMode: AuthModeChatGPT, TokenSource: src,
