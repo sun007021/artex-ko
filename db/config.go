@@ -65,7 +65,14 @@ type LLMProfile struct {
 	// inherit the global policy (LLMRetryPolicy), so an untouched profile behaves
 	// exactly as before. See RetryOverride.
 	Retry RetryOverride `json:"retry"`
+	// AuthMode 는 인증 방식이다. "" = API Key(기본), AuthModeChatGPT = ChatGPT 구독
+	// (Sign in with ChatGPT). 구독 프로필은 항상 format=openai-responses 이고 APIKey 를
+	// 갖지 않으며, OAuth 자격 증명은 llm_profile_oauth(ProfileOAuth)에 따로 저장된다.
+	AuthMode string `json:"auth_mode"`
 }
+
+// AuthModeChatGPT 는 ChatGPT 플랜(Plus/Pro) 사용량으로 추론하는 인증 방식이다.
+const AuthModeChatGPT = "chatgpt"
 
 // RetryOverride is one profile's optional override of the three retry layers
 // that are per-endpoint: 建连(connect) / 空响应(empty) / 同 provider 安全窗口
@@ -80,8 +87,8 @@ type RetryOverride struct {
 // profileCols is the read column list (hint variant, no api key) shared by the
 // list query; profileColsKey is the same with api_key for the single-row loads.
 const profileRetryCols = `COALESCE(retry_connect_attempts,0),COALESCE(retry_connect_interval_ms,0),COALESCE(retry_empty_attempts,0),COALESCE(retry_empty_interval_ms,0),COALESCE(retry_stream_attempts,0),COALESCE(retry_stream_interval_ms,0)`
-const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols
-const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols
+const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols + `,COALESCE(auth_mode,'')`
+const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols + `,COALESCE(auth_mode,'')`
 
 // scanProfile reads one row in the profileCols / profileColsKey column order. The
 // 7th column lands in APIKeyHint or APIKey depending on which list the caller used.
@@ -91,7 +98,8 @@ func scanProfile(sc interface{ Scan(...any) error }, into *string, p *LLMProfile
 		&p.MaxTokens, &p.MaxTokensField, &p.SessionHeaderKey,
 		&p.Retry.Connect.Attempts, &p.Retry.Connect.IntervalMS,
 		&p.Retry.Empty.Attempts, &p.Retry.Empty.IntervalMS,
-		&p.Retry.Stream.Attempts, &p.Retry.Stream.IntervalMS)
+		&p.Retry.Stream.Attempts, &p.Retry.Stream.IntervalMS,
+		&p.AuthMode)
 }
 
 func (d *DB) ListProfiles() ([]*LLMProfile, error) {
@@ -133,13 +141,17 @@ func (d *DB) ProfileByID(id int64) (*LLMProfile, error) {
 }
 
 // PoolProfiles returns the failover chain in run order, api keys included: the
-// active profile first, then every other keyed profile that isn't excluded, by
-// priority DESC (id ASC to stay stable). Profiles without an api key can't serve
-// a request, so they never enter the chain. The ordering IS the policy — callers
+// active profile first, then every other usable profile that isn't excluded, by
+// priority DESC (id ASC to stay stable). A profile that can't serve a request —
+// no api key, or a ChatGPT-subscription profile that isn't signed in — never
+// enters the chain. The ordering IS the policy — callers
 // walk the slice front to back.
 func (d *DB) PoolProfiles() ([]*LLMProfile, error) {
 	rows, err := d.Query(`SELECT ` + profileColsKey + ` FROM llm_profiles
-WHERE COALESCE(api_key,'') <> '' AND (is_default OR NOT pool_exclude)
+WHERE (COALESCE(api_key,'') <> '' OR (auth_mode='chatgpt' AND EXISTS (
+        SELECT 1 FROM llm_profile_oauth o
+         WHERE o.profile_id=llm_profiles.id AND o.status='connected' AND o.refresh_token <> '')))
+  AND (is_default OR NOT pool_exclude)
 ORDER BY is_default DESC, priority DESC, id ASC`)
 	if err != nil {
 		return nil, err
@@ -157,7 +169,20 @@ ORDER BY is_default DESC, priority DESC, id ASC`)
 }
 
 // SaveProfile inserts (id==0) or updates a profile. Empty apiKey on update keeps existing.
+//
+// ChatGPT 구독 프로필(AuthMode=chatgpt)은 저장 시 항상 정규화한다: format 은
+// openai-responses 로 고정, base_url 은 비우고(토큰이 엉뚱한 호스트로 가지 않게 호출 쪽에서도
+// api.openai.com 으로 고정한다), api_key 는 지운다 — 인증 방식을 API Key 에서 구독으로 바꿀 때
+// 예전 키가 DB 에 남아 있지 않게 한다. OAuth 자격 증명은 이 함수가 건드리지 않는다.
 func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
+	if p.AuthMode != "" && p.AuthMode != AuthModeChatGPT {
+		return 0, fmt.Errorf("unknown auth_mode %q", p.AuthMode)
+	}
+	if p.AuthMode == AuthModeChatGPT {
+		cp := *p
+		cp.Format, cp.BaseURL, cp.APIKey, cp.APIKeyHint = "openai-responses", "", "", ""
+		p = &cp
+	}
 	hint := p.APIKeyHint
 	if len(p.APIKey) >= 4 {
 		hint = "…" + p.APIKey[len(p.APIKey)-4:]
@@ -165,21 +190,24 @@ func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
 	r := p.Retry.Clamped()
 	if p.ID == 0 {
 		var id int64
-		err := d.QueryRow(`INSERT INTO llm_profiles(name,format,base_url,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,priority,pool_exclude,thinking_type,streaming,max_tokens,max_tokens_field,session_header_key,retry_connect_attempts,retry_connect_interval_ms,retry_empty_attempts,retry_empty_interval_ms,retry_stream_attempts,retry_stream_interval_ms)
-VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING id`,
+		err := d.QueryRow(`INSERT INTO llm_profiles(name,format,base_url,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,priority,pool_exclude,thinking_type,streaming,max_tokens,max_tokens_field,session_header_key,retry_connect_attempts,retry_connect_interval_ms,retry_empty_attempts,retry_empty_interval_ms,retry_stream_attempts,retry_stream_interval_ms,auth_mode)
+VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25) RETURNING id`,
 			p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey,
-			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS).Scan(&id)
+			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.AuthMode).Scan(&id)
 		return id, err
 	}
 	if p.APIKey == "" {
-		_, err := d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,rate_per_second=$6,rate_per_minute=$7,context_window_k=$8,reasoning_effort=$9,priority=$10,pool_exclude=$11,thinking_type=$12,streaming=$13,max_tokens=$14,max_tokens_field=$15,session_header_key=$16,retry_connect_attempts=$17,retry_connect_interval_ms=$18,retry_empty_attempts=$19,retry_empty_interval_ms=$20,retry_stream_attempts=$21,retry_stream_interval_ms=$22 WHERE id=$23`,
+		// api_key 를 비워 둔 갱신 = 기존 키 유지. 단 구독 프로필로 바꾸는 경우(auth_mode=chatgpt)는
+		// 예전 키와 힌트를 지운다.
+		_, err := d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,rate_per_second=$6,rate_per_minute=$7,context_window_k=$8,reasoning_effort=$9,priority=$10,pool_exclude=$11,thinking_type=$12,streaming=$13,max_tokens=$14,max_tokens_field=$15,session_header_key=$16,retry_connect_attempts=$17,retry_connect_interval_ms=$18,retry_empty_attempts=$19,retry_empty_interval_ms=$20,retry_stream_attempts=$21,retry_stream_interval_ms=$22,auth_mode=$23,
+api_key=CASE WHEN $23='chatgpt' THEN NULL ELSE api_key END,api_key_hint=CASE WHEN $23='chatgpt' THEN NULL ELSE api_key_hint END WHERE id=$24`,
 			p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey,
-			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.ID)
+			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.AuthMode, p.ID)
 		return p.ID, err
 	}
-	_, err := d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,api_key=$6,api_key_hint=$7,rate_per_second=$8,rate_per_minute=$9,context_window_k=$10,reasoning_effort=$11,priority=$12,pool_exclude=$13,thinking_type=$14,streaming=$15,max_tokens=$16,max_tokens_field=$17,session_header_key=$18,retry_connect_attempts=$19,retry_connect_interval_ms=$20,retry_empty_attempts=$21,retry_empty_interval_ms=$22,retry_stream_attempts=$23,retry_stream_interval_ms=$24 WHERE id=$25`,
+	_, err := d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,api_key=$6,api_key_hint=$7,rate_per_second=$8,rate_per_minute=$9,context_window_k=$10,reasoning_effort=$11,priority=$12,pool_exclude=$13,thinking_type=$14,streaming=$15,max_tokens=$16,max_tokens_field=$17,session_header_key=$18,retry_connect_attempts=$19,retry_connect_interval_ms=$20,retry_empty_attempts=$21,retry_empty_interval_ms=$22,retry_stream_attempts=$23,retry_stream_interval_ms=$24,auth_mode=$25 WHERE id=$26`,
 		p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey,
-		r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.ID)
+		r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.AuthMode, p.ID)
 	return p.ID, err
 }
 
