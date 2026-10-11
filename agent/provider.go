@@ -77,6 +77,14 @@ type Config struct {
 	// Retry 是该配置解析后的重试参数(profile 覆盖 → 全局策略 → 内置默认,由
 	// server 侧解析)。三层的含义见 RetryConfig;零值 = 完全沿用内置默认。
 	Retry RetryConfig
+	// AuthMode: "" = 정적 API Key(기본), AuthModeChatGPT = ChatGPT 구독(Sign in with
+	// ChatGPT). 구독 모드는 openai-responses 경로를 그대로 쓰되 Bearer 를 TokenSource 의
+	// OAuth 액세스 토큰으로 요청마다 채운다(chatgpt.go). BaseURL/APIKey 는 무시되고,
+	// MaxTokens·Temperature 등 지원되지 않는 필드는 전송 직전에 제거된다.
+	AuthMode string
+	// TokenSource 는 AuthMode=chatgpt 일 때 필수다. Config 는 == 로 비교되므로(server 가
+	// 캐시된 구성과 비교한다) 포인터 구현이어야 한다.
+	TokenSource TokenSource
 }
 
 // RetryConfig 是随一个 LLM 配置走的重试参数。每层的「次数」统一语义:
@@ -254,14 +262,27 @@ func (c Config) Provider() string {
 // limiter lives on the single provider instance — so planner + all workers +
 // main agent (which share this provider) are bounded by one shared rate limit.
 func (c Config) NewProvider() (llm.Provider, error) {
-	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey)
+	var client *http.Client
+	var err error
+	baseURL, apiKey, format := c.BaseURL, c.APIKey, c.Format
+	if c.UsesChatGPT() {
+		if c.TokenSource == nil {
+			return nil, fmt.Errorf("llm: chatgpt auth requires a token source")
+		}
+		// 구독 토큰은 api.openai.com/v1 로만 간다 — 프로필의 base_url 은 무시한다.
+		// 세션 헤더 같은 비규격 헤더도 보내지 않는다.
+		client, err = chatGPTHTTPClient(c.Proxy, c.TokenSource)
+		baseURL, apiKey, format = ChatGPTBaseURL, chatGPTPlaceholderKey, llm.FormatOpenAIResponses
+	} else {
+		client, err = quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey)
+	}
 	if err != nil {
 		return nil, err
 	}
 	lc := llm.Config{
-		Format:     c.Format,
-		BaseURL:    c.BaseURL,
-		APIKey:     c.APIKey,
+		Format:     format,
+		BaseURL:    baseURL,
+		APIKey:     apiKey,
 		Model:      c.Model,
 		HTTPClient: client,
 	}
@@ -291,6 +312,13 @@ var transientQuotaLimit = regexp.MustCompile(`(?i)(?:\b(?:rpm|tpm|rpd|qps)\b|quo
 
 func IsQuotaExhaustedMessage(message string) bool {
 	message = strings.ToLower(message)
+	// ChatGPT 구독: 사용자의 플랜/앱 사용량 한도 소진. 응답이 429 본문이든 스트림 중
+	// response.failed 든 이 코드가 그대로 남는다. 일시적 한도(rate limit)가 아니라 사용자가
+	// ChatGPT 설정 > Usage 에서 풀기 전까지 계속되는 한도이므로 장애 전환 대상이다.
+	// (subscription_sharing_usage_unavailable 은 일시적 장애라 여기에 넣지 않는다.)
+	if strings.Contains(message, "subscription_sharing_usage_limit_exceeded") {
+		return true
+	}
 	// Authentication/authorization and provider-side 5xx failures never rotate,
 	// even when a gateway happens to echo a quota-looking phrase in the body.
 	if nonFailoverHTTPStatus.MatchString(message) {
@@ -397,26 +425,52 @@ func requestBodySnapshot(req *http.Request) string {
 	return string(b)
 }
 
-func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) {
+// baseTransport builds the shared http.Transport: direct unless an explicit proxy
+// is configured (it never falls back to the *_PROXY environment variables).
+func baseTransport(proxy string) (*http.Transport, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	proxy = strings.TrimSpace(proxy)
 	if proxy == "" {
 		transport.Proxy = nil // 留空=直连,不回退 HTTP_PROXY/HTTPS_PROXY 环境变量
-	} else {
-		proxyURL, err := url.Parse(proxy)
-		if err != nil {
-			return nil, fmt.Errorf("llm: invalid proxy %q: %w", proxy, err)
-		}
-		switch proxyURL.Scheme {
-		case "http", "https", "socks5":
-		case "":
-			return nil, fmt.Errorf("llm: proxy %q missing scheme (use http://, https:// or socks5://)", proxy)
-		default:
-			return nil, fmt.Errorf("llm: unsupported proxy scheme %q (use http, https or socks5)", proxyURL.Scheme)
-		}
-		transport.Proxy = http.ProxyURL(proxyURL)
+		return transport, nil
+	}
+	proxyURL, err := url.Parse(proxy)
+	if err != nil {
+		return nil, fmt.Errorf("llm: invalid proxy %q: %w", proxy, err)
+	}
+	switch proxyURL.Scheme {
+	case "http", "https", "socks5":
+	case "":
+		return nil, fmt.Errorf("llm: proxy %q missing scheme (use http://, https:// or socks5://)", proxy)
+	default:
+		return nil, fmt.Errorf("llm: unsupported proxy scheme %q (use http, https or socks5)", proxyURL.Scheme)
+	}
+	transport.Proxy = http.ProxyURL(proxyURL)
+	return transport, nil
+}
+
+func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) {
+	transport, err := baseTransport(proxy)
+	if err != nil {
+		return nil, err
 	}
 	return &http.Client{Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey)}}, nil
+}
+
+// chatGPTHTTPClient is quotaAwareHTTPClient for subscription profiles: the quota
+// layer stays outermost (raw capture, 429 → 402 for usage-limit bodies) and the
+// token-injecting transport sits between it and the network.
+func chatGPTHTTPClient(proxy string, src TokenSource) (*http.Client, error) {
+	transport, err := baseTransport(proxy)
+	if err != nil {
+		return nil, err
+	}
+	inner := &chatgptTransport{base: transport, src: src, endpoint: chatGPTResponsesEndpoint}
+	return &http.Client{
+		Transport: quotaAwareTransport{base: inner},
+		// 리다이렉트를 따라가지 않는다 — 자격 증명이 다른 호스트로 갈 길을 아예 막는다.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}, nil
 }
 
 // logTestConnection prints the raw HTTP status code(s) and response body of a
