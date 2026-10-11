@@ -145,11 +145,46 @@ docker compose up -d          # artex 이미지 + postgres 를 함께 기동
 }
 ```
 
-**LLM:** `export ANTHROPIC_API_KEY=sk-...`(또는 `OPENAI_API_KEY`), 혹은 UI 의 "LLM 설정" 페이지에서 입력합니다. 선택 환경 변수로 `ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY` 를 둘 수 있습니다. 국산·오픈 모델을 쓰려면 OpenAI 호환 `ARTEX_LLM_BASE_URL` 을 지정하십시오.
+**LLM:** `export ANTHROPIC_API_KEY=sk-...`(또는 `OPENAI_API_KEY`), 혹은 UI 의 "LLM 설정" 페이지에서 입력합니다. API Key 대신 ChatGPT Plus/Pro 구독으로 로그인해 쓸 수도 있습니다([아래 참고](#chatgpt-구독으로-사용하기-api-key-없이)). 선택 환경 변수로 `ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY` 를 둘 수 있습니다. 국산·오픈 모델을 쓰려면 OpenAI 호환 `ARTEX_LLM_BASE_URL` 을 지정하십시오.
 
 **동시성:** 작업마다 돌리는 worker 에이전트 수는 "시스템 설정"에서 조정합니다(기본값 3).
 
 **자주 쓰는 인자:** `./start.sh -addr :8787 -proxy :8788` 에서 `-addr` 는 프런트엔드와 API 를 열고, `-proxy` 는 트래픽 기록 프록시 포트입니다. `-addr` 의 기본값은 `127.0.0.1:8787`(로컬 접속만)이며, 다른 기기에서 접속하려면 `:8787` 처럼 바인딩 주소를 명시해야 합니다(아래 "초기 설정 보호" 참고).
+
+### ChatGPT 구독으로 사용하기 (API Key 없이)
+
+ChatGPT Plus/Pro 구독의 사용량으로 모델을 호출할 수 있습니다. OpenAI 가 오픈소스·로컬 실행 앱에 공식으로 열어 둔 「Sign in with ChatGPT」 토큰 공유 경로를 쓰며, API Key 과금 대신 해당 ChatGPT 계정의 플랜 한도가 적용됩니다. 바뀌는 것은 인증뿐입니다. 에이전트 루프와 도구 호출은 기존 `openai-responses`(Responses API, `store:false`) 경로를 그대로 쓰므로 같은 모델이면 API Key 로 돌릴 때와 같은 방식으로 동작합니다.
+
+**사용 방법**
+
+1. 「시스템 → LLM」에서 「새로 만들기」를 누르고 **인증 방식**을 「ChatGPT 구독 (Plus/Pro)」으로 고릅니다.
+2. 이름과 모델을 입력하고 **「ChatGPT로 로그인」** 을 누릅니다. 설정이 먼저 저장되고, 새 탭에서 OpenAI 로그인·권한 승인 화면이 열립니다. 승인하면 브라우저가 `http://127.0.0.1:<포트>/auth/callback` 으로 돌아오고 ARTEX 가 자동으로 연결을 마칩니다(`<포트>` 는 ARTEX 에 접속한 포트이며 기본값은 8787). 권한 요청에는 「ChatGPT 플랜 사용량 사용」 승인이 포함되어야 합니다. 빠지면 카드에 「권한 필요」가 뜨고 「권한 다시 허용」으로 다시 로그인할 수 있습니다.
+3. 로그인되면 모델 칸 오른쪽의 새로고침 버튼이 **이 계정이 쓸 수 있는 모델 목록**을 불러옵니다(목록에 없는 모델도 직접 입력할 수 있습니다). 추론 강도(`reasoning.effort`)를 고르고 「연결 테스트」로 실제 호출을 확인한 뒤 저장합니다.
+4. 카드에서 「활성으로 설정」하거나 작업·에이전트에 이 설정을 지정합니다. 로그아웃하면 OpenAI 쪽 refresh token 폐기를 요청하고 이 서버의 토큰을 지웁니다.
+
+**ARTEX 서버와 브라우저가 다른 컴퓨터일 때 (원격 서버 / Docker)**
+
+OpenAI 의 리디렉션 주소는 반드시 `http://127.0.0.1:<포트>/auth/callback` 형식이라(포트만 바꿀 수 있음), 브라우저가 ARTEX 와 같은 호스트에 있을 때만 자동으로 돌아옵니다. Docker 는 8787 포트를 호스트에 게시해 두었고 브라우저가 같은 호스트라면 그대로 자동입니다. 브라우저가 다른 컴퓨터라면 승인 뒤 `127.0.0.1` 페이지가 열리지 않는 것이 정상입니다. 그때 **주소창의 URL 전체를 복사**해 로그인 영역의 「붙여넣기로 완료」 칸에 넣으면 같은 로그인이 마무리됩니다(코드는 일회용이고 10분 안에 써야 합니다).
+
+**사용량 한도와 장애 전환**
+
+ChatGPT 설정의 「Usage」에서 앱별 주간 한도를 걸 수 있습니다. 한도에 닿으면 `subscription_sharing_usage_limit_exceeded` 오류가 오며, ARTEX 는 이를 API Key 의 잔액·할당량 소진과 같이 취급해 「LLM 순환」이 켜져 있으면 다음 설정으로 넘어갑니다(`subscription_sharing_usage_unavailable` 같은 일시 오류는 소진으로 보지 않습니다).
+
+**알려진 제한과 주의**
+
+- **출력 토큰 상한(`max_tokens`)은 보낼 수 없습니다.** 구독 직접 경로가 `max_output_tokens` 등 일부 요청 필드를 지원하지 않아 ARTEX 가 제거합니다. 응답은 항상 스트리밍이며 세션 헤더도 쓰지 않습니다. 해당 입력은 이 인증 방식에서 숨겨집니다.
+- **토큰은 API Key 와 같은 수준으로 DB 에 보관됩니다(`llm_profile_oauth`, 평문).** 화면·API 응답·로그·LLM 호출 기록(llmrec)에는 나오지 않지만, DB 와 백업에 접근할 수 있는 사람은 읽을 수 있으니 접근을 통제하십시오. refresh token 은 갱신할 때마다 새 값으로 회전하므로 같은 DB 를 여러 ARTEX 프로세스가 동시에 쓰는 구성은 지원하지 않습니다(갱신 직렬화가 프로세스 안에서만 보장됩니다).
+- **개인·로컬 사용 범위입니다.** OpenAI 쿡북은 ChatGPT 플랜 사용량을 오픈소스 프로젝트와 로컬에서 도는 개인 프로젝트에 열어 두며, 유료·원격 호스팅 앱은 대기 명단 승인이 필요하다고 안내합니다. 한 계정을 여럿이 나눠 쓰는 용도로 쓰지 마십시오.
+- **검증 범위.** 공식 문서의 흐름을 모의 발급자·모의 서버로 구현·시험했습니다(단위·통합 테스트). 실제 `auth.openai.com`·`api.openai.com` 과의 종단 간 호출은 이 저장소의 CI 에서 하지 않으므로, 처음 쓰는 환경에서는 「연결 테스트」로 확인하십시오. 모델 목록과 지원하는 추론 강도는 계정·시점에 따라 달라집니다.
+
+**정책 근거.** ARTEX 는 OpenAI 가 공개한 방식만 씁니다. Codex CLI 같은 다른 도구의 토큰 파일(`~/.codex/auth.json`)을 읽거나 그 클라이언트 ID 를 빌리지 않고, ChatGPT 내부 `backend-api` 를 부르지 않으며, 공개 Responses API(`https://api.openai.com/v1/responses`)만 호출합니다.
+
+- [Sign in with ChatGPT 쿡북](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt)
+- [토큰 공유(오픈소스) — 로그인](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
+- [토큰 공유(오픈소스) — 모델과 추론](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
+- [OpenAI 도움말: 지원되는 오픈소스 도구](https://help.openai.com/articles/20001542)
+
+**Claude 구독(Pro/Max)은 지원하지 않습니다.** Anthropic 은 서드파티 애플리케이션이 Claude.ai 로그인을 제공하거나 사용자의 Free·Pro·Max 자격 증명으로 요청을 대신 보내는 것을 허용하지 않으며, 개발자가 Claude.ai 자격 증명이나 세션 토큰을 수집·저장·중개하는 것도 금지합니다. ARTEX 는 에이전트 엔진의 LLM 으로 Claude 구독을 쓰는 기능을 만들지 않습니다. Claude 모델은 API Key 로 쓰십시오. 근거: [Claude Code 법적·준수 사항](https://code.claude.com/docs/en/legal-and-compliance), [Agent SDK 개요](https://code.claude.com/docs/en/agent-sdk/overview).
 
 ### 모델 선택과 출력 언어
 

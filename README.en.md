@@ -138,13 +138,48 @@ Upstream provides several methods: an install script (`./install.sh`), precompil
 }
 ```
 
-**LLM:** `export ANTHROPIC_API_KEY=sk-...` (or `OPENAI_API_KEY`), or enter it on the UI's "LLM settings" page. Optional environment variables: `ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`. To use a domestic or open model, point `ARTEX_LLM_BASE_URL` at an OpenAI-compatible endpoint.
+**LLM:** `export ANTHROPIC_API_KEY=sk-...` (or `OPENAI_API_KEY`), or enter it on the UI's "LLM settings" page. Instead of an API key you can also sign in with a ChatGPT Plus/Pro subscription ([see below](#using-a-chatgpt-subscription-no-api-key)). Optional environment variables: `ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`. To use a domestic or open model, point `ARTEX_LLM_BASE_URL` at an OpenAI-compatible endpoint.
 
 **Output language:** this edition forces user-facing output into Korean via a small, code-fixed directive appended to each role's system prompt (it does not translate the reasoning body). If you need a different output language, adapt that directive in `agent/prompt.go` (`langDirective`).
 
 **Concurrency:** the number of worker agents spawned per task is adjustable under "System settings" (default 3).
 
 **Common flags:** `./start.sh -addr :8787 -proxy :8788` — `-addr` is the frontend and API, `-proxy` is the traffic-recording proxy port. `-addr` defaults to `127.0.0.1:8787` (local connections only); pass an explicit bind address such as `:8787` to serve other machines (see "First-run protection" below).
+
+### Using a ChatGPT subscription (no API key)
+
+You can run models on the usage of a ChatGPT Plus/Pro subscription. This uses OpenAI's official "Sign in with ChatGPT" token-sharing path for open-source and locally run apps; instead of API-key billing, the plan limits of that ChatGPT account apply. Only authentication changes. The agent loop and tool calling keep using the existing `openai-responses` path (Responses API, `store:false`), so with the same model it behaves the same as with an API key.
+
+**How to use it**
+
+1. Under "System → LLM", click "New" and set **Authentication** to "ChatGPT subscription (Plus/Pro)".
+2. Enter a name and a model, then click **"Sign in with ChatGPT"**. The profile is saved first and OpenAI's sign-in and consent page opens in a new tab. After you approve, the browser returns to `http://127.0.0.1:<port>/auth/callback` and ARTEX finishes the connection automatically (`<port>` is the port you reached ARTEX on; 8787 by default). The consent must include permission to use your ChatGPT plan usage. If it was not granted, the card shows "Permission needed" and "Allow permission again" signs you in again.
+3. Once signed in, the refresh button next to the model field loads **the models this account can use** (you can still type a model that is not listed). Pick a reasoning effort (`reasoning.effort`), run "Test connection" to confirm a real call, and save.
+4. Set the profile active on its card, or assign it to tasks and agents. Signing out asks OpenAI to revoke the refresh token and deletes the tokens on this server.
+
+**When the browser is on a different computer than the ARTEX server (remote server / Docker)**
+
+OpenAI's redirect address must be `http://127.0.0.1:<port>/auth/callback` (only the port may vary), so it returns automatically only when the browser runs on the same host as ARTEX. With Docker, port 8787 is published on the host, so a browser on that host works automatically. If the browser is on another computer, it is normal for the `127.0.0.1` page not to load after you approve. Then **copy the full URL from the address bar** and paste it into the "Finish by pasting" box in the sign-in area to complete the same sign-in (the code is single-use and must be used within 10 minutes).
+
+**Usage limits and failover**
+
+You can set a weekly per-app limit under "Usage" in ChatGPT settings. When it is reached the error `subscription_sharing_usage_limit_exceeded` is returned. ARTEX treats this like an exhausted balance or quota on an API key, so with "LLM rotation" enabled it moves on to the next profile (transient errors such as `subscription_sharing_usage_unavailable` are not treated as exhaustion).
+
+**Known limits and cautions**
+
+- **The output token cap (`max_tokens`) cannot be sent.** The direct subscription path does not support some request fields such as `max_output_tokens`, so ARTEX removes them. Responses always stream and the session header is not used. Those inputs are hidden for this authentication method.
+- **Tokens are stored in the database at the same protection level as API keys (`llm_profile_oauth`, plain text).** They never appear in the UI, API responses, logs or LLM call records (llmrec), but anyone with access to the database or its backups can read them, so restrict that access. The refresh token rotates on every refresh, so running several ARTEX processes against one database is not supported (refresh serialization holds only inside one process).
+- **Personal, local use only.** The OpenAI cookbook makes ChatGPT plan usage available to open-source projects and personal projects that run locally, and says paid or remotely hosted apps need waitlist approval. Do not use one account to serve several people.
+- **Scope of verification.** The flow from the official documentation was implemented and tested against a mock issuer and mock servers (unit and integration tests). This repository's CI makes no end-to-end calls to the real `auth.openai.com` or `api.openai.com`, so in a new environment confirm with "Test connection". The model list and the supported reasoning efforts depend on the account and on the time.
+
+**Policy basis.** ARTEX uses only the method OpenAI has published. It does not read another tool's token file (such as Codex CLI's `~/.codex/auth.json`), borrow its client ID or call ChatGPT's internal `backend-api`; it calls only the public Responses API (`https://api.openai.com/v1/responses`).
+
+- [Sign in with ChatGPT cookbook](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt)
+- [Token sharing (open source) — sign in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
+- [Token sharing (open source) — models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
+- [OpenAI Help: supported open-source tools](https://help.openai.com/articles/20001542)
+
+**Claude subscriptions (Pro/Max) are not supported.** Anthropic does not permit third-party applications to offer Claude.ai login or to route requests through a user's Free, Pro or Max credentials, and it prohibits developers from collecting, storing or intermediating Claude.ai credentials or session tokens. ARTEX does not build a feature that uses a Claude subscription as the agent engine's LLM. Use Claude models with an API key. Basis: [Claude Code legal and compliance](https://code.claude.com/docs/en/legal-and-compliance), [Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview).
 
 ### Model selection and output language
 

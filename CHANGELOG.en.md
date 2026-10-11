@@ -8,6 +8,10 @@ The upstream ARTEX project's per-version release history (0.3.x and earlier) and
 
 ## [Unreleased] · Korean edition changes
 
+### LLM connection
+
+- **You can run the LLM on a ChatGPT Plus/Pro subscription (no API key needed).** LLM profiles gain the authentication method `chatgpt`. It uses OpenAI's official "Sign in with ChatGPT" token-sharing path for open-source and local apps (OIDC + PKCE, `127.0.0.1` callback) and sends inference to the public Responses API with a Bearer token (`store:false`, streaming). The agent loop and tool calling keep using the existing `openai-responses` path. The settings page gains a "Sign in with ChatGPT" button, an account model dropdown and a reasoning-effort selector, plus a paste-the-address completion path for when the server is on another host. Tokens are stored only in the server database and never appear in the UI, API responses, logs or LLM records. A usage-limit error (`subscription_sharing_usage_limit_exceeded`) feeds the existing quota-exhaustion failover. Usage, limits (no output token cap, plain-text database storage, personal and local use only) and the policy basis are in the [README](README.en.md#using-a-chatgpt-subscription-no-api-key). Claude subscriptions are not supported because of Anthropic's terms.
+
 ### Security
 
 - **Blocked remote takeover of the first-run admin account.** An instance without a password accepted `POST /api/auth/init` unauthenticated, so whoever reached the port first could set the admin password and obtain a JWT (privately reported by Dangel). Initialisation now requires the setup token (`setup_token`) printed only on the server console at startup, and wrong attempts are rate-limited. Added `ARTEX_SETUP_TOKEN` and `ARTEX_ADMIN_PASSWORD` for unattended deployments and a token field on the `/setup` screen.

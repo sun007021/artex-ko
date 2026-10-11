@@ -13,6 +13,8 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 > ⚠️ **安全与合规提示（韩语本地化版本）**：本仓库是 [Autumn-27/ARTEX](https://github.com/Autumn-27/ARTEX) 的韩语本地化 fork，仅供在获得授权的环境中、以防御与检测为目的使用。2026 年 10 月有韩国媒体报道称，调查机构在针对韩国金融机构的个人信息泄露事件中发现了 ARTEX 被使用的迹象（调查进行中）。请勿对未经书面授权的系统进行扫描、探测或利用。完整警告请见 [README.md（한국어）](README.md) 与 [README.en.md（English）](README.en.md)。
 
+> 💡 **使用 ChatGPT 订阅（韩语本地化版新增）**：除 API Key 外，LLM 配置现在可以选择“ChatGPT 订阅 (Plus/Pro)”认证方式，走 OpenAI 官方“Sign in with ChatGPT”面向开源/本地个人使用的令牌共享路径；不读取 Codex CLI 的令牌文件，也不调用 ChatGPT 内部 `backend-api`。Claude 订阅（Pro/Max）因 Anthropic 条款禁止第三方应用代理其凭据，故不支持。用法、限制与依据请见 [README.md（한국어）](README.md#chatgpt-구독으로-사용하기-api-key-없이) 与 [README.en.md（English）](README.en.md#using-a-chatgpt-subscription-no-api-key)。
+
 ---
 
 ## 截图预览

@@ -8,6 +8,10 @@
 
 ## [Unreleased] · 한국어판 변경
 
+### LLM 연결
+
+- **ChatGPT Plus/Pro 구독으로 LLM 을 돌릴 수 있습니다(API Key 불필요).** LLM 프로필에 인증 방식 `chatgpt` 를 추가했습니다. OpenAI 가 오픈소스·로컬 앱에 공식으로 연 「Sign in with ChatGPT」 토큰 공유 경로(OIDC + PKCE, `127.0.0.1` 콜백)를 쓰고, 추론은 공개 Responses API 에 Bearer 토큰으로 보냅니다(`store:false`, 스트리밍). 에이전트 루프·도구 호출은 기존 `openai-responses` 경로를 그대로 씁니다. 설정 화면에 「ChatGPT로 로그인」 버튼, 계정 모델 드롭다운, 추론 강도 선택을 더했고, 서버가 다른 호스트일 때를 위한 주소 붙여넣기 완료 경로를 두었습니다. 토큰은 서버 DB 에만 저장되며 화면·API 응답·로그·LLM 기록에는 나오지 않습니다. 한도 초과(`subscription_sharing_usage_limit_exceeded`)는 기존 할당량 소진 장애 전환으로 이어집니다. 사용법과 제한(출력 토큰 상한 미지원, 평문 DB 보관, 개인·로컬 사용 범위)과 정책 근거는 [README](README.md#chatgpt-구독으로-사용하기-api-key-없이)에 있습니다. Claude 구독은 Anthropic 약관상 지원하지 않습니다.
+
 ### 보안
 
 - **첫 실행 관리자 계정의 원격 선점을 막았습니다.** 비밀번호가 아직 없는 인스턴스는 `POST /api/auth/init` 을 인증 없이 받아, 포트에 먼저 닿은 누구나 관리자 비밀번호를 정하고 JWT 를 받을 수 있었습니다(비공개 제보: Dangel). 이제 기동 시 서버 콘솔에만 출력되는 설정 토큰(`setup_token`)이 맞아야 초기화되고, 틀린 시도는 횟수 제한에 걸립니다. 무인 배포용으로 `ARTEX_SETUP_TOKEN`·`ARTEX_ADMIN_PASSWORD` 환경 변수를 추가했고, `/setup` 화면에 토큰 입력란을 넣었습니다.
