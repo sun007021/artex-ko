@@ -215,6 +215,7 @@ You can set a weekly per-app limit under "Usage" in ChatGPT settings. When it is
 - The default prompt is replaced with `--system-prompt-file`, but the binary may still prepend its own identity text. The `mcp__artex__` prefix on tool names is explained by a short, code-fixed note at the end of the system prompt.
 - The output token cap, temperature, per-second/minute rate limits and the thinking type do not apply (hidden in the UI). Responses always stream.
 - When the same tool is called several times at once with identical arguments, matching results to calls depends on arrival order. With different arguments they are matched exactly by arguments.
+- Passing a token made by `claude setup-token` through the `CLAUDE_CODE_OAUTH_TOKEN` environment variable is not supported. Because ARTEX does not forward credentials, it removes that variable from the child environment; use the login that `claude auth login` stores.
 - Some user-facing errors appear in Korean only.
 - **Verification scope.** The shape of `claude`'s stream-json output is an assumption based on the official documentation, and this repository's tests run against a fake `claude` that follows it (tool round trip, several tools, usage limit, crash, cancellation, concurrency cap, environment sanitising, ...). End-to-end calls against the real `claude` are not made in CI, so on a new setup check with "Test connection" and a short task first.
 
