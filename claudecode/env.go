@@ -6,46 +6,41 @@ import (
 
 // 자식 claude 프로세스의 환경변수 정책.
 //
-// 원칙: 사용자의 일반 환경(PATH, HOME, 로캘, 프록시 등)은 그대로 넘기되, 인증·라우팅을 바꾸는
-// 변수는 모두 뺀다. 그래야 자식이 "사용자가 직접 로그인한 구독"만 쓴다. 특히
+// 원칙: 허용 목록(allowlist). 자식에게는 실행에 필요한 일반 환경(PATH, HOME, 로캘, 임시 디렉터리,
+// Windows 시스템 변수, 프록시·TLS 변수, CLAUDE_CONFIG_DIR, XDG_*)만 넘기고 나머지는 전부 뺀다.
+// 거부 목록 방식은 새 인증·라우팅 변수(CLAUDE_CODE_USE_MANTLE 처럼 나중에 생기는 것)가 생길 때마다
+// 구멍이 되므로 쓰지 않는다. 특히
 //   - ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN 이 있으면 claude 는 구독 대신 그것을 쓴다
 //     (-p 모드에서는 항상). ARTEX 자신의 환경(.env, docker-compose 등)에 이 값이 있어도
-//     의도치 않게 API 과금 경로로 새지 않도록 제거한다.
+//     의도치 않게 API 과금 경로로 새지 않는다.
 //   - CLAUDE_CODE_OAUTH_TOKEN 은 `claude setup-token` 으로 만든 토큰이다. ARTEX 는 이 토큰을
 //     읽지도, 자식에 전달하지도 않는다(구독 자격 증명을 중개하지 않는다).
-//   - ANTHROPIC_BASE_URL / ANTHROPIC_CUSTOM_HEADERS / ANTHROPIC_PROFILE / 페더레이션 변수와
-//     CLAUDE_CODE_USE_* (Bedrock/Vertex/Foundry) 는 요청 목적지나 자격 증명을 바꾼다.
-//   - CLAUDE_CODE_SIMPLE 은 --bare 와 같은 효과(구독 로그인 무시)라서 뺀다.
-var strippedEnv = map[string]bool{
-	"ANTHROPIC_API_KEY":                    true,
-	"ANTHROPIC_AUTH_TOKEN":                 true,
-	"CLAUDE_CODE_OAUTH_TOKEN":              true,
-	"CLAUDE_CODE_OAUTH_REFRESH_TOKEN":      true,
-	"ANTHROPIC_BASE_URL":                   true,
-	"ANTHROPIC_CUSTOM_HEADERS":             true,
-	"ANTHROPIC_PROFILE":                    true,
-	"ANTHROPIC_FEDERATION_RULE_ID":         true,
-	"ANTHROPIC_ORGANIZATION_ID":            true,
-	"ANTHROPIC_WORKSPACE_ID":               true,
-	"ANTHROPIC_IDENTITY_TOKEN_FILE":        true,
-	"ANTHROPIC_IDENTITY_TOKEN":             true,
-	"ANTHROPIC_MODEL":                      true, // 모델은 프로필의 --model 로만 정한다
-	"ANTHROPIC_SMALL_FAST_MODEL":           true,
-	"CLAUDE_CODE_USE_BEDROCK":              true,
-	"CLAUDE_CODE_USE_VERTEX":               true,
-	"CLAUDE_CODE_USE_FOUNDRY":              true,
-	"CLAUDE_CODE_USE_ANTHROPIC_AWS":        true,
-	"ANTHROPIC_FOUNDRY_API_KEY":            true,
-	"AWS_BEARER_TOKEN_BEDROCK":             true,
-	"CLAUDE_CODE_SIMPLE":                   true,
-	"CLAUDE_CODE_EFFORT_LEVEL":             true, // 강도는 프로필의 --effort 로만 정한다
-	"CLAUDE_CODE_MAX_OUTPUT_TOKENS":        true,
-	"MAX_THINKING_TOKENS":                  true,
-	"CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": true,
+//   - ANTHROPIC_BASE_URL / ANTHROPIC_CUSTOM_HEADERS / 페더레이션 변수 / CLAUDE_CODE_USE_* 클라우드 공급자
+//     변수, 모델·강도 오버라이드(ANTHROPIC_MODEL, CLAUDE_CODE_EFFORT_LEVEL ...)는 요청 목적지·자격 증명·
+//     프로필 설정을 바꾸므로 허용 목록에 없다. CLAUDE_CODE_SIMPLE 은 --bare 와 같은 효과(구독 로그인 무시)다.
+//
+// 허용 목록은 이름 비교를 대소문자 무시로 한다(Windows 의 환경 변수 이름이 그렇다).
+var allowedEnv = map[string]bool{
+	// 실행·사용자 식별
+	"PATH": true, "HOME": true, "USER": true, "USERNAME": true, "LOGNAME": true, "SHELL": true, "TERM": true,
+	"TZ": true, "LANG": true, "LANGUAGE": true, "__CF_USER_TEXT_ENCODING": true,
+	// 임시 디렉터리
+	"TMPDIR": true, "TMP": true, "TEMP": true,
+	// Windows
+	"USERPROFILE": true, "APPDATA": true, "LOCALAPPDATA": true, "PROGRAMDATA": true, "PROGRAMFILES": true,
+	"PROGRAMFILES(X86)": true, "PROGRAMW6432": true, "COMMONPROGRAMFILES": true, "COMMONPROGRAMFILES(X86)": true,
+	"SYSTEMROOT": true, "SYSTEMDRIVE": true, "WINDIR": true, "COMSPEC": true, "PATHEXT": true, "OS": true,
+	"PROCESSOR_ARCHITECTURE": true, "NUMBER_OF_PROCESSORS": true, "COMPUTERNAME": true, "USERDOMAIN": true,
+	"HOMEDRIVE": true, "HOMEPATH": true, "PUBLIC": true, "ALLUSERSPROFILE": true,
+	// 프록시·TLS (네트워크 경로만 바꾸고 인증은 바꾸지 않는다)
+	"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true, "NO_PROXY": true,
+	"SSL_CERT_FILE": true, "SSL_CERT_DIR": true, "NODE_EXTRA_CA_CERTS": true, "REQUESTS_CA_BUNDLE": true, "CURL_CA_BUNDLE": true,
+	// 사용자가 옮겨 둔 claude 설정 위치(로그인 상태가 여기 있다), Windows 의 git-bash 경로
+	"CLAUDE_CONFIG_DIR": true, "CLAUDE_CODE_GIT_BASH_PATH": true,
 }
 
-// strippedPrefixes 는 접두사 단위로 제거하는 변수다.
-var strippedPrefixes = []string{"ANTHROPIC_VERTEX_", "ANTHROPIC_BEDROCK_", "ANTHROPIC_FOUNDRY_"}
+// allowedEnvPrefixes 는 접두사 단위로 허용하는 변수다(로캘, XDG 디렉터리).
+var allowedEnvPrefixes = []string{"LC_", "XDG_"}
 
 // hardenedEnv 는 항상 덮어쓰는 변수다. 사용자의 개인 설정(CLAUDE.md, 자동 메모리, 훅, 플러그인,
 // 백그라운드 작업 등)이 ARTEX 에이전트에 새어 들어오지 않게 하고, MCP 도구 호출이 시간 제한이나
@@ -81,7 +76,7 @@ var hardenedEnv = [][2]string{
 	{"MCP_TIMEOUT", "60000"},
 }
 
-// SanitizedEnv 는 parent("K=V" 목록)에서 인증·라우팅 변수를 뺀 자식용 환경을 돌려준다.
+// SanitizedEnv 는 parent("K=V" 목록)에서 허용 목록의 변수만 남긴 자식용 환경을 돌려준다.
 // extra 는 마지막에 덧붙여 덮어쓴다(예: 프로필 프록시). 순서가 유지되므로 같은 키는 뒤가 이긴다.
 func SanitizedEnv(parent []string, extra ...string) []string {
 	out := make([]string, 0, len(parent)+len(hardenedEnv)+len(extra))
@@ -90,7 +85,7 @@ func SanitizedEnv(parent []string, extra ...string) []string {
 		if !ok || k == "" {
 			continue
 		}
-		if envStripped(k) {
+		if !envAllowed(k) {
 			continue
 		}
 		out = append(out, kv)
@@ -102,12 +97,12 @@ func SanitizedEnv(parent []string, extra ...string) []string {
 	return dedupeEnv(out)
 }
 
-func envStripped(k string) bool {
-	if strippedEnv[strings.ToUpper(k)] {
+func envAllowed(k string) bool {
+	uk := strings.ToUpper(k)
+	if allowedEnv[uk] {
 		return true
 	}
-	uk := strings.ToUpper(k)
-	for _, p := range strippedPrefixes {
+	for _, p := range allowedEnvPrefixes {
 		if strings.HasPrefix(uk, p) {
 			return true
 		}

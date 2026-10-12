@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -36,6 +37,7 @@ const (
 	KindCrash              // 프로세스 비정상 종료
 	KindProtocol           // 예상 밖 출력 / MCP 연결 실패
 	KindRefused            // ARTEX 정책 거부(꺼짐·API Key 인증 등)
+	KindStalled            // 출력이 한동안 없어 감시가 프로세스를 정리했다
 )
 
 // Error 는 claude 구동 오류다.
@@ -44,6 +46,15 @@ type Error struct {
 	Message string
 	// ResetAt 은 사용량 한도가 풀리는 시각(알 수 있을 때만, 아니면 zero).
 	ResetAt time.Time
+	// Scope 는 한도의 종류(rate_limit_event 의 rateLimitType: five_hour, seven_day, seven_day_opus ...).
+	// 모르면 "". 계정 전체에 걸린 한도인지 모델 하나의 한도인지 가르는 데 쓴다(Global).
+	Scope string
+}
+
+// Global 은 이 사용량 한도가 계정 전체(5시간/주간 공용 한도)에 걸린 것인지 알려 준다. 모델별 주간 한도
+// (seven_day_opus 등)와 종류를 모르는 한도는 그 모델에만 적용한다.
+func (e *Error) Global() bool {
+	return e.Kind == KindUsageLimit && (e.Scope == "five_hour" || e.Scope == "seven_day")
 }
 
 func (e *Error) Error() string {
@@ -66,23 +77,24 @@ var usageLimitText = regexp.MustCompile(`(?i)(usage limit|hit your limit|limit r
 
 // classify 는 claude 가 알려 준 오류 범주(assistant.error: rate_limit, authentication_failed,
 // billing_error, ...)와 본문 텍스트로 Error 를 만든다.
-func classify(category, text string, resetAt time.Time) *Error {
+func classify(category, text string, hint limitHint) *Error {
 	text = strings.TrimSpace(text)
+	resetAt := hint.Reset
 	switch category {
 	case "authentication_failed", "oauth_org_not_allowed", "account_on_hold":
 		return &Error{Kind: KindAuth, Message: authHint(category, text)}
 	case "billing_error":
-		return &Error{Kind: KindUsageLimit, Message: orDefault(text, "billing_error"), ResetAt: resetAt}
+		return &Error{Kind: KindUsageLimit, Message: orDefault(text, "billing_error"), ResetAt: resetAt, Scope: hint.Type}
 	case "rate_limit":
 		if usageLimitText.MatchString(text) || !resetAt.IsZero() {
-			return &Error{Kind: KindUsageLimit, Message: orDefault(text, "usage limit reached"), ResetAt: resetAt}
+			return &Error{Kind: KindUsageLimit, Message: orDefault(text, "usage limit reached"), ResetAt: resetAt, Scope: hint.Type}
 		}
 		return &Error{Kind: KindRateLimit, Message: orDefault(text, "request throttled")}
 	case "overloaded", "server_error":
 		return &Error{Kind: KindRateLimit, Message: category + ": " + text}
 	case "":
 		if usageLimitText.MatchString(text) {
-			return &Error{Kind: KindUsageLimit, Message: text, ResetAt: resetAt}
+			return &Error{Kind: KindUsageLimit, Message: text, ResetAt: resetAt, Scope: hint.Type}
 		}
 	}
 	if category == "" {
@@ -110,4 +122,23 @@ func orDefault(s, d string) string {
 		return d
 	}
 	return s
+}
+
+// IsUsageLimit 은 err 가 claude 구독 사용량 한도 소진인지 타입으로 판정한다(문자열 마커가 아니다).
+func IsUsageLimit(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Kind == KindUsageLimit
+}
+
+// IsSetupError 는 err 가 설치·버전·정책 거부처럼 같은 요청을 되풀이해도 소용없는 오류인지 알려 준다.
+func IsSetupError(err error) bool {
+	var e *Error
+	if !errors.As(err, &e) {
+		return false
+	}
+	switch e.Kind {
+	case KindNotFound, KindTooOld, KindRefused:
+		return true
+	}
+	return false
 }

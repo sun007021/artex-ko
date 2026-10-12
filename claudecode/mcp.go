@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -52,7 +53,8 @@ func (r mcpResult) wire() map[string]any {
 // mcpEndpoint 는 세션 하나가 구현하는 MCP 서버 쪽 동작이다.
 type mcpEndpoint interface {
 	listTools() []mcpTool
-	callTool(ctx context.Context, name string, args json.RawMessage) mcpResult
+	// toolUseID 는 tools/call 의 `_meta` 가 실어 준 tool_use ID 다(없으면 "").
+	callTool(ctx context.Context, name string, args json.RawMessage, toolUseID string) mcpResult
 }
 
 type mcpHub struct {
@@ -64,7 +66,7 @@ type mcpHub struct {
 }
 
 // startHub 는 루프백 HTTP 서버를 띄운다.
-func startHub() (*mcpHub, error) {
+func startHub(logf func(string, ...any)) (*mcpHub, error) {
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("claude-code: MCP 루프백 서버를 시작하지 못했습니다: %w", err)
@@ -75,7 +77,11 @@ func startHub() (*mcpHub, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 		// 응답 타임아웃을 두지 않는다: tools/call 은 ARTEX 가 도구를 끝낼 때까지(수 시간) 열려 있다.
 	}
-	go h.srv.Serve(ln)
+	go func() {
+		if err := h.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && logf != nil {
+			logf("[claude-code] MCP 루프백 서버가 멈췄습니다: %v", err)
+		}
+	}()
 	return h, nil
 }
 
@@ -245,16 +251,32 @@ func (h *mcpHub) dispatch(ctx context.Context, ep mcpEndpoint, q rpcRequest) (re
 		resp.Result = map[string]any{"prompts": []any{}}
 	case "tools/call":
 		var p struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
+			Name      string                     `json:"name"`
+			Arguments json.RawMessage            `json:"arguments"`
+			Meta      map[string]json.RawMessage `json:"_meta"`
 		}
 		if json.Unmarshal(q.Params, &p) != nil || p.Name == "" {
 			resp.Error = &rpcError{Code: -32602, Message: "invalid params"}
 			return resp, true
 		}
-		resp.Result = ep.callTool(ctx, p.Name, p.Arguments).wire()
+		resp.Result = ep.callTool(ctx, p.Name, p.Arguments, toolUseIDFromMeta(p.Meta)).wire()
 	default:
 		resp.Error = &rpcError{Code: -32601, Message: "method not found"}
 	}
 	return resp, true
+}
+
+// toolUseMetaKeys 는 tools/call 의 `_meta` 에서 tool_use ID 를 찾아 볼 키들이다. Claude Code 는
+// "claudecode/toolUseId" 로 실어 보낸다(문서화된 계약이 아니라서 흔한 변형도 함께 본다). ID 가 없으면
+// 짝맞춤은 (이름, 인자) 기준으로 대체된다.
+var toolUseMetaKeys = []string{"claudecode/toolUseId", "claudecode/toolUseID", "toolUseId", "tool_use_id", "anthropic/toolUseId"}
+
+func toolUseIDFromMeta(meta map[string]json.RawMessage) string {
+	for _, k := range toolUseMetaKeys {
+		var id string
+		if raw, ok := meta[k]; ok && json.Unmarshal(raw, &id) == nil && strings.TrimSpace(id) != "" {
+			return strings.TrimSpace(id)
+		}
+	}
+	return ""
 }

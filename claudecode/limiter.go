@@ -2,8 +2,11 @@ package claudecode
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/Autumn-27/artex/llmauth"
 )
 
 // 구독 한도는 "ordinary, individual usage" 를 전제로 하므로(legal-and-compliance), 여러
@@ -17,8 +20,8 @@ import (
 
 // DefaultMaxConcurrent 와 HardMaxConcurrent 는 슬롯 수의 기본값과 하드 상한이다.
 const (
-	DefaultMaxConcurrent = 1
-	HardMaxConcurrent    = 3
+	DefaultMaxConcurrent = llmauth.ClaudeCodeDefaultConcurrent
+	HardMaxConcurrent    = llmauth.ClaudeCodeHardConcurrent
 )
 
 // limiter 는 크기를 바꿀 수 있는 카운팅 세마포어다.
@@ -35,15 +38,7 @@ func newLimiter(max int) *limiter {
 	return l
 }
 
-func clampConcurrent(n int) int {
-	if n <= 0 {
-		return DefaultMaxConcurrent
-	}
-	if n > HardMaxConcurrent {
-		return HardMaxConcurrent
-	}
-	return n
-}
+func clampConcurrent(n int) int { return llmauth.ClampClaudeCodeConcurrent(n) }
 
 func (l *limiter) setMax(n int) {
 	l.mu.Lock()
@@ -189,4 +184,76 @@ func (g *gate) success() {
 	g.mu.Lock()
 	g.backoff, g.until, g.err = 0, time.Time{}, nil
 	g.mu.Unlock()
+}
+
+// gateSet 은 게이트를 범위별로 나눈다. 5시간/주간 공용 한도는 계정 전체에 걸리므로 전역 게이트 하나가
+// 모든 모델을 막지만, 모델별 한도(seven_day_opus 등)와 과부하·속도 제한은 그 모델의 게이트만 연다 —
+// Opus 한도가 Sonnet 프로필까지 몇 시간 막지 않게 한다. 한도의 종류를 모르면 모델 범위로 본다(다른 모델은
+// 한 번 시도해 보고 스스로 막힌다).
+type gateSet struct {
+	mu        sync.Mutex
+	global    *gate
+	models    map[string]*gate
+	configure []func(*gate) // 새 게이트에도 적용할 설정(테스트가 시계·대기 함수를 바꾼다)
+}
+
+func newGateSet() *gateSet { return &gateSet{global: newGate(), models: map[string]*gate{}} }
+
+func modelGateKey(model string) string {
+	if m := strings.ToLower(strings.TrimSpace(model)); m != "" {
+		return m
+	}
+	return "(default)"
+}
+
+func (s *gateSet) model(name string) *gate {
+	key := modelGateKey(name)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := s.models[key]
+	if g == nil {
+		g = newGate()
+		for _, f := range s.configure {
+			f(g)
+		}
+		s.models[key] = g
+	}
+	return g
+}
+
+// tune 은 기존·이후의 모든 게이트에 f 를 적용한다.
+func (s *gateSet) tune(f func(*gate)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.configure = append(s.configure, f)
+	f(s.global)
+	for _, g := range s.models {
+		f(g)
+	}
+}
+
+// check 는 호출 직전에 부른다: 전역 한도, 그다음 모델 게이트 순이다.
+func (s *gateSet) check(ctx context.Context, model string) error {
+	if err := s.global.check(ctx); err != nil {
+		return err
+	}
+	return s.model(model).check(ctx)
+}
+
+// record 는 실패 결과를 범위에 맞는 게이트에 반영한다.
+func (s *gateSet) record(model string, e *Error) {
+	if e == nil {
+		return
+	}
+	if e.Global() {
+		s.global.record(e)
+		return
+	}
+	s.model(model).record(e)
+}
+
+// success 는 정상 응답을 받았을 때 그 모델의 백오프와 구간을 걷는다.
+func (s *gateSet) success(model string) {
+	s.global.success()
+	s.model(model).success()
 }

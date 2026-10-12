@@ -92,6 +92,9 @@ type Config struct {
 	// 문자열이라 Config 는 계속 == 로 비교된다. 비어 있으면 PATH 의 "claude" / 임시 디렉터리.
 	ClaudeBinary  string
 	ClaudeWorkDir string
+	// ClaudeManager 는 claude-code 의 실행 환경(슬롯·게이트·세션 표)이다. 서버가 하나 만들어 모든
+	// 프로필의 Config 에 넣는다. 포인터라서 Config 는 계속 == 로 비교된다.
+	ClaudeManager *claudecode.Manager
 }
 
 // RetryConfig 是随一个 LLM 配置走的重试参数。每层的「次数」统一语义:
@@ -271,7 +274,7 @@ func (c Config) Provider() string {
 func (c Config) NewProvider() (llm.Provider, error) {
 	if c.UsesClaudeCode() {
 		// 구독으로 로그인된 claude CLI 가 모델 턴을 만든다(HTTP 클라이언트·API Key 없음).
-		return c.newClaudeCodeProvider(), nil
+		return c.newClaudeCodeProvider()
 	}
 	var client *http.Client
 	var err error
@@ -364,6 +367,22 @@ func IsQuotaExhaustedMessage(message string) bool {
 	return strings.Contains(message, "resource_exhausted") &&
 		!strings.Contains(message, "rate limit") &&
 		!strings.Contains(message, "too many requests")
+}
+
+// IsQuotaExhaustedError is IsQuotaExhaustedMessage for an error value. A typed claude-code
+// usage-limit error is recognized without relying on its message text; everything else (and
+// errors that crossed a string boundary) goes through the message classifier unchanged.
+func IsQuotaExhaustedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsNoFailoverError(err) {
+		return false
+	}
+	if claudecode.IsUsageLimit(err) {
+		return true
+	}
+	return IsQuotaExhaustedMessage(err.Error())
 }
 
 // IsNoFailoverMessage reports whether an error must not make a request move to another
@@ -618,8 +637,8 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	// 一套发头逻辑;未配 SessionHeaderKey 的端点不读它,无副作用。
 	sid := "conntest-" + transcript.NewSessionID()
 	ctx = transcript.WithSessionID(ctx, sid)
-	if c.UsesClaudeCode() {
-		defer claudecode.CloseSession(sid) // 테스트가 끝나면 이 세션의 claude 프로세스를 바로 정리한다
+	if c.UsesClaudeCode() && c.ClaudeManager != nil {
+		defer c.ClaudeManager.CloseSession(sid) // 테스트가 끝나면 이 세션의 claude 프로세스를 바로 정리한다
 	}
 	start := time.Now()
 	// MaxTokens 要给足：推理模型(如 deepseek-v4-pro)在给出答案前会先产出一大段

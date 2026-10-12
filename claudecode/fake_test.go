@@ -20,6 +20,13 @@ import (
 // 프로토콜에 대한 이 패키지의 가정(protocol.go)을 그대로 흉내 내며, 실제 바이너리와의 호환을 증명하지는
 // 않는다 — 그건 사용자가 자기 claude 로 연결 테스트를 해서 확인해야 한다.
 
+func init() {
+	// 가짜 claude 는 환경 변수로 동작을 받는다. 운영 코드의 허용 목록에는 없으므로 테스트에서만 연다.
+	for _, k := range []string{"CLAUDECODE_FAKE", "FAKE_DIR", "FAKE_VERSION", "FAKE_AUTH", "FAKE_ENV_DUMP"} {
+		allowedEnv[k] = true
+	}
+}
+
 func TestMain(m *testing.M) {
 	if os.Getenv("CLAUDECODE_FAKE") == "1" {
 		os.Exit(fakeMain(os.Args[1:]))
@@ -33,6 +40,7 @@ type fakeBlock struct {
 	Name  string          `json:"name,omitempty"` // tool: ARTEX 이름(접두사 제외)
 	Args  json.RawMessage `json:"args,omitempty"`
 	ID    string          `json:"id,omitempty"`
+	Meta  bool            `json:"meta,omitempty"`  // tools/call 에 _meta 로 tool_use ID 를 싣는다
 	Hasty bool            `json:"hasty,omitempty"` // MCP 호출을 content_block_stop 직후에 바로 한다(실제 claude 의 스트리밍 실행)
 }
 
@@ -44,6 +52,13 @@ type fakeMsg struct {
 	ErrCat   string      `json:"err_cat,omitempty"`  // assistant.error 범주
 	ErrText  string      `json:"err_text,omitempty"`
 	Crash    bool        `json:"crash,omitempty"`
+	// Hang 은 메시지를 시작하자마자(message_start 이후) 아무것도 내보내지 않고 멈춘다 — 멈춘 claude 를 재현한다.
+	Hang bool `json:"hang,omitempty"`
+	// Retries 는 message_start 뒤에 api_retry 줄을 RetryEveryMS 간격으로 Retries 번 내보낸 다음 멈춘다.
+	Retries      int `json:"retries,omitempty"`
+	RetryEveryMS int `json:"retry_every_ms,omitempty"`
+	// RateLimit 는 result 앞에 거절된 rate_limit_event 를 내보낸다(rateLimitType 값).
+	RateLimit string `json:"rate_limit,omitempty"`
 	// ExitAfter 는 턴의 마지막 줄(result)을 쓰자마자 프로세스를 끝낸다 — 출력 끝부분 유실 경합을 재현한다.
 	ExitAfter bool `json:"exit_after,omitempty"`
 }
@@ -207,6 +222,9 @@ func fakeRunMessage(dir string, idx int, mcpURL string, m fakeMsg, n int) bool {
 		os.Exit(3)
 	}
 	if m.ErrCat != "" {
+		if m.RateLimit != "" {
+			fakeEmit(map[string]any{"type": "rate_limit_event", "rate_limit_info": map[string]any{"status": "rejected", "rateLimitType": m.RateLimit, "resetsAt": time.Now().Add(time.Hour).Unix()}})
+		}
 		fakeEmit(map[string]any{"type": "assistant", "error": m.ErrCat, "parent_tool_use_id": nil,
 			"message": map[string]any{"role": "assistant", "content": []map[string]any{{"type": "text", "text": m.ErrText}}}})
 		fakeEmit(map[string]any{"type": "result", "subtype": "success", "is_error": true, "result": m.ErrText})
@@ -215,12 +233,18 @@ func fakeRunMessage(dir string, idx int, mcpURL string, m fakeMsg, n int) bool {
 	fakeLog(dir, idx, map[string]any{"k": "gen_start", "t": time.Now().UnixNano()})
 	fakeSSE(map[string]any{"type": "message_start", "message": map[string]any{"id": fmt.Sprintf("msg_%d", n),
 		"usage": map[string]any{"input_tokens": 10, "cache_read_input_tokens": 5, "cache_creation_input_tokens": 2, "output_tokens": 1}}})
-	type pend struct {
-		name string
-		args json.RawMessage
-		ch   chan [2]any
-	}
+	type pend = fakePend
 	var pending []*pend
+	if m.Hang {
+		select {}
+	}
+	for i := 0; i < m.Retries; i++ {
+		fakeEmit(map[string]any{"type": "system", "subtype": "api_retry", "attempt": i + 1, "max_retries": m.Retries, "error": "server_error"})
+		time.Sleep(time.Duration(m.RetryEveryMS) * time.Millisecond)
+	}
+	if m.Retries > 0 {
+		select {}
+	}
 	var content []map[string]any
 	for i, b := range m.Blocks {
 		switch b.Type {
@@ -251,10 +275,10 @@ func fakeRunMessage(dir string, idx int, mcpURL string, m fakeMsg, n int) bool {
 			fakeSSE(map[string]any{"type": "content_block_delta", "index": i, "delta": map[string]any{"type": "input_json_delta", "partial_json": args[half:]}})
 			fakeSSE(map[string]any{"type": "content_block_stop", "index": i})
 			content = append(content, map[string]any{"type": "tool_use", "id": id, "name": toolPrefix + b.Name, "input": json.RawMessage(args)})
-			p := &pend{name: b.Name, args: json.RawMessage(args), ch: make(chan [2]any, 1)}
+			p := &pend{name: b.Name, args: json.RawMessage(args), id: id, meta: b.Meta, ch: make(chan [2]any, 1)}
 			pending = append(pending, p)
 			if b.Hasty {
-				go func() { text, isErr := fakeCall(mcpURL, p.name, p.args); p.ch <- [2]any{text, isErr} }()
+				go func() { text, isErr := fakeCall(mcpURL, p.name, p.args, p.metaID()); p.ch <- [2]any{text, isErr} }()
 			}
 		}
 	}
@@ -267,6 +291,9 @@ func fakeRunMessage(dir string, idx int, mcpURL string, m fakeMsg, n int) bool {
 	fakeLog(dir, idx, map[string]any{"k": "gen_stop", "t": time.Now().UnixNano()})
 
 	if m.Stop != "tool_use" {
+		if m.RateLimit != "" {
+			fakeEmit(map[string]any{"type": "rate_limit_event", "rate_limit_info": map[string]any{"status": "rejected", "rateLimitType": m.RateLimit, "resetsAt": time.Now().Add(time.Hour).Unix()}})
+		}
 		fakeEmit(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": "ok", "total_cost_usd": 0.0})
 		if m.ExitAfter {
 			os.Exit(0)
@@ -284,7 +311,7 @@ func fakeRunMessage(dir string, idx int, mcpURL string, m fakeMsg, n int) bool {
 		if hasty[i] {
 			return // 이미 진행 중
 		}
-		text, isErr := fakeCall(mcpURL, p.name, p.args)
+		text, isErr := fakeCall(mcpURL, p.name, p.args, p.metaID())
 		p.ch <- [2]any{text, isErr}
 	}
 	var wg sync.WaitGroup
@@ -299,13 +326,32 @@ func fakeRunMessage(dir string, idx int, mcpURL string, m fakeMsg, n int) bool {
 	wg.Wait()
 	for _, p := range pending {
 		r := <-p.ch
-		fakeLog(dir, idx, map[string]any{"k": "tool_result", "name": p.name, "args": string(p.args), "text": r[0], "isError": r[1]})
+		fakeLog(dir, idx, map[string]any{"k": "tool_result", "id": p.id, "name": p.name, "args": string(p.args), "text": r[0], "isError": r[1]})
 	}
 	return false
 }
 
-func fakeCall(url, name string, args json.RawMessage) (string, bool) {
-	res, err := fakeRPC(url, 9, "tools/call", map[string]any{"name": name, "arguments": json.RawMessage(args)})
+type fakePend struct {
+	name string
+	args json.RawMessage
+	id   string
+	meta bool
+	ch   chan [2]any
+}
+
+func (p *fakePend) metaID() string {
+	if p.meta {
+		return p.id
+	}
+	return ""
+}
+
+func fakeCall(url, name string, args json.RawMessage, toolUseID string) (string, bool) {
+	params := map[string]any{"name": name, "arguments": json.RawMessage(args)}
+	if toolUseID != "" {
+		params["_meta"] = map[string]any{"claudecode/toolUseId": toolUseID}
+	}
+	res, err := fakeRPC(url, 9, "tools/call", params)
 	if err != nil {
 		return "rpc error: " + err.Error(), true
 	}

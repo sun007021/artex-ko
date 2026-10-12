@@ -83,7 +83,7 @@ func isTaskLLMChainExhausted(err error) bool {
 // network failure, or 5xx does not rotate providers; the response must explicitly
 // identify quota, credits, billing balance, or payment exhaustion.
 func isQuotaExhaustedError(err error) bool {
-	return err != nil && agent.IsQuotaExhaustedMessage(err.Error())
+	return agent.IsQuotaExhaustedError(err)
 }
 
 type taskLLMSelection struct {
@@ -436,6 +436,9 @@ func isRetryableStreamError(err error) bool {
 	if isQuotaExhaustedError(err) {
 		return false
 	}
+	if claudecode.IsSetupError(err) { // 타입으로 먼저 본다(아래 문자열 판정은 문자열로만 건너온 오류용)
+		return false
+	}
 	s := strings.ToLower(err.Error())
 	if strings.Contains(s, claudecode.SetupErrorMarker) { // claude 미설치/구버전/정책 거부: 되풀이해도 같다
 		return false
@@ -567,6 +570,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	window := workerRuntime.CompactionWindow()
 	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
 	wk.SetFindingRecorder(s.evidenceStore())
+	wk.SetSessionReleaser(s.claudeManager().CloseSession) // 끝난 워커의 claude 프로세스를 바로 정리한다
 	wk.SetCompactionWindowResolver(workerRuntime.CompactionWindow)
 	wk.SetNonStreaming(workerRuntime.nonStreaming) // 按任务当前激活 profile 的流式开关(每轮读)
 	wk.SetMaxTokens(workerRuntime.maxTokens)       // 同上,输出上限也跟随当前激活 profile

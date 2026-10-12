@@ -1895,18 +1895,16 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errMgmtLLMBadAuthMode)
 		return
 	}
-	// 구독(ChatGPT) 프로필: 형식은 openai-responses 로 고정, API Key·base_url·출력 상한·세션
-	// 헤더·비스트리밍은 이 경로에서 쓰지 않으므로 비운다(max_output_tokens 는 지원되지 않는
-	// 요청 필드이고 스트리밍은 항상 켜진다). 모델·추론 강도·컨텍스트 창·속도 제한은 그대로 쓴다.
-	if p.AuthMode == db.AuthModeChatGPT {
-		// 모델 식별자는 코드에 두지 않는다 — 계정의 모델 목록에서 고른 값이 반드시 있어야 한다.
-		if strings.TrimSpace(p.Model) == "" {
+	// 구독 방식 프로필(ChatGPT, claude-code)의 정규화·검증은 db.NormalizeSubscription 한 곳에서 한다. API 경로 전용
+	// 필드는 비워지고, 모델·추론 강도는 사용자가 정한 값이 그대로 쓰인다.
+	if err := p.NormalizeSubscription(); err != nil {
+		switch {
+		case errors.Is(err, db.ErrChatGPTModelRequired):
 			writeErr(w, 400, errChatGPTModelRequired)
-			return
+		default:
+			writeErr(w, 400, errClaudeCodeBadEffort)
 		}
-		p.Model = strings.TrimSpace(p.Model)
-		p.Format, p.BaseURL, p.APIKey = "openai-responses", "", ""
-		p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, p.Streaming = 0, "", "", true
+		return
 	}
 	// 구독 → API Key 로 바꾸면 남은 OAuth 자격 증명을 폐기하고 지운다.
 	var prev *db.LLMProfile
@@ -1918,10 +1916,6 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	if p.AuthMode == db.AuthModeClaudeCode {
 		if !pg.ClaudeCodeSettings().Enabled && (prev == nil || prev.AuthMode != db.AuthModeClaudeCode) {
 			writeErr(w, 400, errClaudeCodeDisabled)
-			return
-		}
-		if msg := normalizeClaudeCodeProfile(&p); msg != "" {
-			writeErr(w, 400, msg)
 			return
 		}
 	}

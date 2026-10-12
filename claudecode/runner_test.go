@@ -156,7 +156,7 @@ func TestClassify(t *testing.T) {
 		{"", "something odd", time.Time{}, KindUnknown},
 	}
 	for _, c := range cases {
-		if e := classify(c.cat, c.text, c.reset); e.Kind != c.kind {
+		if e := classify(c.cat, c.text, limitHint{Reset: c.reset}); e.Kind != c.kind {
 			t.Errorf("%s/%q → %v want %v", c.cat, c.text, e.Kind, c.kind)
 		}
 	}

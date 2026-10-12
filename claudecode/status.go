@@ -70,8 +70,16 @@ func Probe(ctx context.Context, configuredBinary string) Status {
 	}
 	st.Binary, st.Installed = bin, true
 	env := SanitizedEnv(os.Environ())
+	// 세션과 같은 격리: 같은 정제 환경에 ARTEX 전용 빈 작업 디렉터리에서 실행한다(ARTEX 를 띄운 디렉터리의
+	// 프로젝트·로컬 설정이 상태 점검에 섞이지 않게).
+	dir, derr := os.MkdirTemp("", "artex-claude-probe-")
+	if derr != nil {
+		st.Problem, st.Detail = ProblemUnknown, "점검용 작업 디렉터리를 만들 수 없습니다: "+derr.Error()
+		return st
+	}
+	defer os.RemoveAll(dir)
 
-	out, _, verr := runCapture(ctx, bin, env, 15*time.Second, "--version")
+	out, _, verr := runCapture(ctx, bin, env, dir, 15*time.Second, "--version")
 	if verr != nil {
 		st.Problem, st.Detail = ProblemUnknown, "claude --version 실행 실패: "+verr.Error()
 		return st
@@ -87,7 +95,7 @@ func Probe(ctx context.Context, configuredBinary string) Status {
 	}
 
 	// 종료 코드: 로그인됨 0, 아니면 1. 두 경우 모두 stdout 의 JSON 을 읽는다.
-	aout, _, aerr := runCapture(ctx, bin, env, 20*time.Second, "auth", "status")
+	aout, _, aerr := runCapture(ctx, bin, env, dir, 20*time.Second, "auth", "status")
 	var ee *exec.ExitError
 	if aerr != nil && !errors.As(aerr, &ee) {
 		st.Problem, st.Detail = ProblemUnknown, "claude auth status 실행 실패: "+aerr.Error()
@@ -125,11 +133,13 @@ func Probe(ctx context.Context, configuredBinary string) Status {
 }
 
 // runCapture 는 bin 을 args 로 실행해 stdout/stderr 를 돌려준다.
-func runCapture(ctx context.Context, bin string, env []string, timeout time.Duration, args ...string) (stdout, stderr string, err error) {
+func runCapture(ctx context.Context, bin string, env []string, dir string, timeout time.Duration, args ...string) (stdout, stderr string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = env
+	cmd.Dir = dir
+	cmd.WaitDelay = 3 * time.Second
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
 	err = cmd.Run()

@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/claudecode"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/llmauth"
 )
 
 // claude-code 인증 방식(공식 claude CLI 를 사용자가 직접 로그인한 구독으로 구동)의 서버 쪽.
@@ -36,11 +38,24 @@ const (
 	msgClaudeCodeUnknown      = "claude 상태를 확인하지 못했습니다. 터미널에서 `claude auth status` 를 직접 실행해 보세요"
 )
 
+// claudeCodeMaxLiveEnv 는 동시에 살아 있을 수 있는 claude 대기 프로세스 수 상한(기본 8, 최대 64)을 바꾸는 환경변수다.
+// 에이전트 세션이 이보다 많으면 오래 놀던 프로세스가 정리되고 다음 호출이 전사를 재생하므로, 동시에 도는
+// 에이전트가 많은 사용자만 올린다.
+const claudeCodeMaxLiveEnv = "ARTEX_CLAUDE_CODE_MAX_LIVE"
+
+// claudeManager 는 이 서버의 claude-code 실행 환경을 돌려준다(처음 쓸 때 만든다). 프로세스 전역이 아니라
+// 서버가 쥔다.
+func (s *Server) claudeManager() *claudecode.Manager {
+	s.claudeOnce.Do(func() { s.claude = claudecode.NewManager() })
+	return s.claude
+}
+
+// CloseClaudeCode 는 claude-code 가 띄운 프로세스와 loopback MCP 서버를 모두 정리한다(서버 종료 때).
+func (s *Server) CloseClaudeCode() { s.claudeManager().Shutdown() }
+
 // claudeCodeAllowRemoteEnv 는 loopback 이 아닌 주소로 듣는 배포(예: 호스트의 127.0.0.1 로만 포트를 게시한
 // 컨테이너)에서 소유자가 직접 확인한 뒤 켤 수 있게 하는 환경변수다.
 const claudeCodeAllowRemoteEnv = "ARTEX_CLAUDE_CODE_ALLOW_NONLOOPBACK"
-
-var validClaudeEfforts = map[string]bool{"": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 
 // claudeCodeWorkDir 는 claude 프로세스가 쓰는 전용 작업 디렉터리의 부모다.
 func (s *Server) claudeCodeWorkDir() string {
@@ -71,10 +86,14 @@ func (s *Server) applyClaudeCodeSettings() {
 		log.Printf("[claude-code] 서버가 loopback 이 아닌 주소(%s)에서 접속 가능해 claude-code 를 켜지 않습니다. 본인 PC 에서만 접근되도록 127.0.0.1 로 바인딩하세요", s.listenAddr)
 		on = false
 	}
-	claudecode.SetLogger(log.Printf)
-	claudecode.SetMaxConcurrent(cs.MaxConcurrent)
-	claudecode.SetEnabled(on)
-	claudecode.InvalidateProbe()
+	mgr := s.claudeManager()
+	mgr.SetLogger(log.Printf)
+	mgr.SetMaxConcurrent(cs.MaxConcurrent)
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(claudeCodeMaxLiveEnv))); err == nil {
+		mgr.SetMaxLive(n)
+	}
+	mgr.SetEnabled(on)
+	mgr.InvalidateProbe()
 }
 
 // cleanClaudeCodeWorkDir 는 이전 실행이 남긴 임시 작업 디렉터리를 비운다. 서버 시작 때 한 번만 부른다 —
@@ -189,7 +208,7 @@ func (s *Server) claudeCodeConfig(model, effort, proxy string) agent.Config {
 	if s.m != nil && s.m.pg != nil {
 		bin = s.m.pg.ClaudeCodeSettings().BinaryPath
 	}
-	return agent.NewClaudeCodeConfig(model, effort, proxy, bin, s.claudeCodeWorkDir())
+	return agent.NewClaudeCodeConfig(model, effort, proxy, bin, s.claudeCodeWorkDir(), s.claudeManager())
 }
 
 // testClaudeCode: 연결 테스트(auth_mode=claude-code). 실제로 claude 를 한 번 구동해 짧은 응답을 받는다.
@@ -199,11 +218,11 @@ func (s *Server) testClaudeCode(w http.ResponseWriter, r *http.Request, profileI
 		fail(errMgmtPGUnavailable)
 		return
 	}
-	if !claudecode.Enabled() {
+	if !s.claudeManager().Enabled() {
 		fail(errClaudeCodeDisabled)
 		return
 	}
-	if !validClaudeEfforts[effort] {
+	if !llmauth.ValidClaudeEffort(effort) {
 		fail(errClaudeCodeBadEffort)
 		return
 	}
@@ -228,19 +247,4 @@ func (s *Server) testClaudeCode(w http.ResponseWriter, r *http.Request, profileI
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "latency_ms": lat.Milliseconds(), "model": cfg.Model, "reply": truncateReply(reply)})
-}
-
-// normalizeClaudeCodeProfile 은 저장 직전 claude-code 프로필을 정리하고 오류 문구(없으면 "")를 돌려준다.
-// API 경로 전용 필드(키, base_url, 출력 상한, 세션 헤더, 속도 제한, thinking 방식)는 이 경로에서 쓰지 않으므로 비운다.
-// 모델과 추론 강도는 사용자가 정한 값을 그대로 --model / --effort 로 넘긴다.
-func normalizeClaudeCodeProfile(p *db.LLMProfile) string {
-	p.Model = strings.TrimSpace(p.Model)
-	p.ReasoningEffort = strings.ToLower(strings.TrimSpace(p.ReasoningEffort))
-	if !validClaudeEfforts[p.ReasoningEffort] {
-		return errClaudeCodeBadEffort
-	}
-	p.Format, p.BaseURL, p.APIKey = "anthropic", "", ""
-	p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, p.Streaming = 0, "", "", true
-	p.RatePerSecond, p.RatePerMinute, p.ThinkingType = 0, 0, ""
-	return ""
 }

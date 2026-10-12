@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/Autumn-27/artex/claudecode"
 	"github.com/Autumn-27/artex/db"
 )
 
@@ -44,7 +43,7 @@ func (s *Server) resolutionFromProfile(p *db.LLMProfile, source string) taskLLMR
 		Source:    source,
 	}
 	if p.AuthMode == db.AuthModeClaudeCode {
-		if !claudecode.Enabled() {
+		if !s.claudeManager().Enabled() {
 			result.Reason = reasonLLMProfileClaudeCodeOff
 			return result
 		}

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/claudecode"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/siwc"
 )
@@ -98,7 +97,7 @@ func (s *Server) profileAgentConfig(p *db.LLMProfile) (cfg agent.Config, ready b
 	} else if p.AuthMode == db.AuthModeClaudeCode {
 		// claude CLI(구독) 경로: 모델·추론 강도는 프로필 값 그대로 --model/--effort 로 간다. 켜져 있어야 준비됨.
 		cfg = s.claudeCodeConfig(p.Model, p.ReasoningEffort, p.Proxy)
-		ready = claudecode.Enabled()
+		ready = s.claudeManager().Enabled()
 	} else {
 		cfg = agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
 		ready = cfg.APIKey != ""

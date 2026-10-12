@@ -25,7 +25,7 @@ import (
 type harness struct {
 	t     *testing.T
 	dir   string
-	m     *manager
+	m     *Manager
 	p     *Provider
 	ctx   context.Context
 	sys   []string
@@ -59,18 +59,19 @@ func newHarness(t *testing.T) *harness {
 	}
 	t.Setenv("CLAUDECODE_FAKE", "1")
 	t.Setenv("FAKE_DIR", dir)
-	m := newManager()
+	m := NewManager()
 	m.enabled.Store(true)
-	old := defaultManager
-	defaultManager = m
-	t.Cleanup(func() { m.shutdown(); defaultManager = old })
 	h := &harness{
 		t: t, dir: dir, m: m,
 		ctx:   transcript.WithSessionID(context.Background(), "sess-1"),
 		sys:   []string{"ROLE PROMPT", "second segment"},
 		tools: testTools(),
 	}
-	h.p = NewProvider(Options{Binary: exe, Model: "model-x", Effort: "high", WorkDir: filepath.Join(dir, "work")})
+	// 정리는 거꾸로 실행된다: Shutdown → 가짜 claude 들이 끝나기를 기다림 → 임시 디렉터리 삭제.
+	// 프로세스가 아직 죽는 중에 디렉터리를 지우면 "directory not empty" 로 실패한다.
+	t.Cleanup(h.waitProcsDead)
+	t.Cleanup(m.Shutdown)
+	h.p = m.NewProvider(Options{Binary: exe, Model: "model-x", Effort: "high", WorkDir: filepath.Join(dir, "work")})
 	return h
 }
 
@@ -321,7 +322,7 @@ func TestFlagsEnvAndSystemPrompt(t *testing.T) {
 	t.Setenv("MY_HARMLESS_VAR", "keep")
 	t.Setenv("NO_PROXY", "internal.example")
 	h := newHarness(t)
-	h.p = NewProvider(Options{Binary: h.p.opts.Binary, Model: "model-x", Effort: "xhigh", WorkDir: h.p.opts.WorkDir, Proxy: "http://127.0.0.1:3128"})
+	h.p = h.m.NewProvider(Options{Binary: h.p.opts.Binary, Model: "model-x", Effort: "xhigh", WorkDir: h.p.opts.WorkDir, Proxy: "http://127.0.0.1:3128"})
 	h.script(0, fakeMsg{Blocks: []fakeBlock{textBlock("hi")}, Stop: "end_turn"})
 	h.user("go")
 	if r := h.run(); r.err != nil {
@@ -357,8 +358,11 @@ func TestFlagsEnvAndSystemPrompt(t *testing.T) {
 			t.Errorf("자격 증명 값이 자식 환경에 남음: %s", kv)
 		}
 	}
-	if envMap["MY_HARMLESS_VAR"] != "keep" {
-		t.Error("일반 환경변수는 보존해야 한다")
+	if _, ok := envMap["MY_HARMLESS_VAR"]; ok {
+		t.Error("허용 목록에 없는 변수는 자식에게 넘기지 않는다")
+	}
+	if envMap["PATH"] == "" {
+		t.Error("PATH 는 보존해야 한다")
 	}
 	for _, k := range []string{"CLAUDE_CODE_DISABLE_CLAUDE_MDS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "ENABLE_TOOL_SEARCH", "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"} {
 		if _, ok := envMap[k]; !ok {
@@ -630,12 +634,14 @@ func TestTransientRateLimitBacksOff(t *testing.T) {
 	h := newHarness(t)
 	var mu sync.Mutex
 	var slept []time.Duration
-	h.m.gate.sleepFn = func(ctx context.Context, d time.Duration) error {
-		mu.Lock()
-		slept = append(slept, d)
-		mu.Unlock()
-		return nil
-	}
+	h.m.gates.tune(func(g *gate) {
+		g.sleepFn = func(ctx context.Context, d time.Duration) error {
+			mu.Lock()
+			slept = append(slept, d)
+			mu.Unlock()
+			return nil
+		}
+	})
 	h.script(0, fakeMsg{ErrCat: "overloaded", ErrText: "Overloaded"})
 	h.script(1, fakeMsg{Blocks: []fakeBlock{textBlock("recovered")}, Stop: "end_turn"})
 	h.user("go")
@@ -756,8 +762,24 @@ func TestCancelWhileParkedFreesNothingLeaks(t *testing.T) {
 	h.user("go")
 	h.run()
 	pid := h.pid(0)
-	h.m.closeSession("sess-1")
+	h.m.CloseSession("sess-1")
 	waitFor(t, 8*time.Second, "정리된 프로세스 종료", func() bool { return !pidAlive(pid) })
+}
+
+func (h *harness) waitProcsDead() {
+	deadline := time.Now().Add(10 * time.Second)
+	for i := 0; i < h.procs(); i++ {
+		var m struct {
+			Pid int `json:"pid"`
+		}
+		b, err := os.ReadFile(filepath.Join(h.dir, fmt.Sprintf("proc-%d.meta.json", i)))
+		if err != nil || json.Unmarshal(b, &m) != nil || m.Pid == 0 {
+			continue
+		}
+		for pidAlive(m.Pid) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 }
 
 func (h *harness) pid(idx int) int {
@@ -934,7 +956,7 @@ func TestPreflightProblems(t *testing.T) {
 
 func TestMissingBinary(t *testing.T) {
 	h := newHarness(t)
-	h.p = NewProvider(Options{Binary: filepath.Join(h.dir, "no-such-claude")})
+	h.p = h.m.NewProvider(Options{Binary: filepath.Join(h.dir, "no-such-claude")})
 	h.user("go")
 	r := h.run()
 	if r.err == nil || !strings.Contains(r.err.Error(), "claude") {
@@ -983,7 +1005,7 @@ func TestCloseSessionAndReap(t *testing.T) {
 
 func TestEvictOldestWhenOverMaxLive(t *testing.T) {
 	h := newHarness(t)
-	h.m.maxLive = 2
+	h.m.SetMaxLive(2)
 	for i := 0; i < 3; i++ {
 		h.script(i, fakeMsg{Blocks: []fakeBlock{textBlock("a")}, Stop: "end_turn"})
 	}

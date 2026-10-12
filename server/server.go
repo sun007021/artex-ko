@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/claudecode"
 	"github.com/Autumn-27/artex/config"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
@@ -145,6 +146,8 @@ type Server struct {
 	// ChatGPT 구독(Sign in with ChatGPT) 로그인 상태, 서버가 듣는 포트(리디렉션 URI 기본값),
 	// 그리고 로그인/로그아웃 뒤 캐시를 다시 만드는 동작의 테스트용 대체 훅. chatgpt.go 참고.
 	cgpt            chatgptRuntime
+	claudeOnce      sync.Once
+	claude          *claudecode.Manager // claude-code 인증 방식의 실행 환경(슬롯·한도 게이트·세션 표). claudeManager() 로 쓴다
 	listenPort      int
 	listenAddr      string // SetListenAddr 로 알린 바인딩 주소(claude-code 의 loopback 조건 판정용)
 	afterAuthChange func()

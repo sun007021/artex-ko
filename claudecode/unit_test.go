@@ -72,7 +72,7 @@ func TestProbeEnvIsSanitized(t *testing.T) {
 func TestPreflightCaching(t *testing.T) {
 	h := newHarness(t)
 	calls := 0
-	h.m.probeFn = func(ctx context.Context, bin string) Status {
+	h.m.probe.fn = func(ctx context.Context, bin string) Status {
 		calls++
 		return Status{Usable: false, Problem: ProblemNotLoggedIn, Detail: "no"}
 	}
@@ -84,9 +84,9 @@ func TestPreflightCaching(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("실패 결과를 짧게 캐시해야 한다: %d", calls)
 	}
-	reset := func(m *manager) { m.mu.Lock(); m.probes = map[string]probeEntry{}; m.mu.Unlock() }
+	reset := func(m *Manager) { m.probe.invalidate() }
 	reset(h.m)
-	h.m.probeFn = func(ctx context.Context, bin string) Status { calls++; return Status{Usable: true} }
+	h.m.probe.fn = func(ctx context.Context, bin string) Status { calls++; return Status{Usable: true} }
 	if e := h.m.preflight(context.Background(), "x"); e != nil {
 		t.Fatal(e)
 	}
@@ -103,7 +103,7 @@ func TestMCPHubSecurity(t *testing.T) {
 	}
 	s := newSession(h.m, "x")
 	s.setTools(testTools())
-	p := &proc{s: s, closed: make(chan struct{}), changed: make(chan struct{})}
+	p := &proc{m: h.m, tools: &s.tools, pair: newCallPairer(h.m.logf), closed: make(chan struct{})}
 	tok := hub.register(p)
 	if len(tok) != 64 {
 		t.Fatalf("토큰 길이 %d (256비트 hex 여야 한다)", len(tok))
@@ -160,7 +160,7 @@ func TestMCPDispatchMethods(t *testing.T) {
 	hub, _ := h.m.getHub()
 	s := newSession(h.m, "x")
 	s.setTools(testTools())
-	p := &proc{s: s, closed: make(chan struct{}), changed: make(chan struct{})}
+	p := &proc{m: h.m, tools: &s.tools, pair: newCallPairer(h.m.logf), closed: make(chan struct{})}
 	for _, c := range []struct{ method, want string }{
 		{"initialize", "protocolVersion"}, {"ping", "result"}, {"resources/list", "resources"},
 		{"prompts/list", "prompts"}, {"tools/list", "tools"}, {"nope/nope", "-32601"},
@@ -175,7 +175,7 @@ func TestMCPDispatchMethods(t *testing.T) {
 		t.Error("알림에는 응답하지 않는다")
 	}
 	// 알 수 없는 도구 호출은 오류 결과.
-	r := p.callTool(context.Background(), "ghost", json.RawMessage(`{}`))
+	r := p.callTool(context.Background(), "ghost", json.RawMessage(`{}`), "")
 	if !r.IsError {
 		t.Error("알 수 없는 도구는 오류여야 한다")
 	}

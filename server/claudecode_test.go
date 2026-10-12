@@ -41,17 +41,13 @@ func newCCRig(t *testing.T) *ccRig {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	// 전역 상태(claudecode 패키지)와 저장 설정을 테스트 전후로 초기 상태로 되돌린다.
-	reset := func() {
-		_, _ = d.SaveClaudeCodeSettings(db.ClaudeCodeSettings{})
-		claudecode.SetEnabled(false)
-		claudecode.SetMaxConcurrent(1)
-		claudecode.InvalidateProbe()
-	}
+	// 저장 설정을 테스트 전후로 초기 상태로 되돌린다. claude-code 실행 환경(Manager)은 서버마다 따로다.
+	reset := func() { _, _ = d.SaveClaudeCodeSettings(db.ClaudeCodeSettings{}) }
 	reset()
 	t.Cleanup(reset)
 
 	s := &Server{m: &Manager{pg: d}, jwtKey: []byte(strings.Repeat("c", 32)), llmHealth: newLLMHealthRegistry(d)}
+	t.Cleanup(s.CloseClaudeCode)
 	tok, err := signJWT(s.signingKey(s.readPassHash()))
 	if err != nil {
 		t.Fatal(err)
@@ -129,28 +125,28 @@ func TestClaudeCodeSettingsOptIn(t *testing.T) {
 	if code, out := r.do("PUT", "/api/llm/claude-code/settings", map[string]any{"enabled": true}); code != 400 {
 		t.Fatalf("확인 없이 켜짐: %d %v", code, out)
 	}
-	if claudecode.Enabled() {
+	if r.s.claudeManager().Enabled() {
 		t.Fatal("거절됐는데 켜졌다")
 	}
 	code, out = r.do("PUT", "/api/llm/claude-code/settings", map[string]any{"enabled": true, "acknowledged": true, "max_concurrent": 99, "binary_path": " /opt/claude "})
 	if code != 200 || out["enabled"] != true || out["max_concurrent"] != float64(3) || out["binary_path"] != "/opt/claude" {
 		t.Fatalf("%d %v", code, out)
 	}
-	if !claudecode.Enabled() || claudecode.MaxConcurrent() != 3 {
-		t.Fatalf("패키지에 반영되지 않음: enabled=%v max=%d", claudecode.Enabled(), claudecode.MaxConcurrent())
+	if !r.s.claudeManager().Enabled() || r.s.claudeManager().MaxConcurrent() != 3 {
+		t.Fatalf("패키지에 반영되지 않음: enabled=%v max=%d", r.s.claudeManager().Enabled(), r.s.claudeManager().MaxConcurrent())
 	}
 	// 이미 켜진 상태의 갱신에는 확인이 다시 필요 없다.
 	if code, _ := r.do("PUT", "/api/llm/claude-code/settings", map[string]any{"enabled": true, "max_concurrent": 2}); code != 200 {
 		t.Fatalf("갱신 = %d", code)
 	}
-	if claudecode.MaxConcurrent() != 2 {
+	if r.s.claudeManager().MaxConcurrent() != 2 {
 		t.Fatal("상한 변경 미반영")
 	}
 	if code, _ := r.do("PUT", "/api/llm/claude-code/settings", map[string]any{"enabled": true, "binary_path": "a\nb"}); code != 400 {
 		t.Fatalf("줄바꿈 경로가 통과: %d", code)
 	}
 	code, out = r.do("PUT", "/api/llm/claude-code/settings", map[string]any{"enabled": false})
-	if code != 200 || claudecode.Enabled() {
+	if code != 200 || r.s.claudeManager().Enabled() {
 		t.Fatalf("끄기 실패: %d %v", code, out)
 	}
 }
@@ -159,7 +155,7 @@ func TestClaudeCodeRefusesNonLoopbackListen(t *testing.T) {
 	r := newCCRig(t)
 	r.s.listenAddr = ":8787"
 	code, out := r.do("PUT", "/api/llm/claude-code/settings", map[string]any{"enabled": true, "acknowledged": true})
-	if code != 400 || claudecode.Enabled() {
+	if code != 400 || r.s.claudeManager().Enabled() {
 		t.Fatalf("loopback 이 아닌데 켜짐: %d %v", code, out)
 	}
 	if _, out := r.do("GET", "/api/llm/claude-code/settings", nil); out["loopback_only"] != false {
@@ -172,14 +168,14 @@ func TestClaudeCodeRefusesNonLoopbackListen(t *testing.T) {
 	}
 	// 시작 시 저장 값이 켜져 있어도 loopback 이 아니면 켜지지 않는다.
 	t.Setenv(claudeCodeAllowRemoteEnv, "")
-	claudecode.SetEnabled(false)
+	r.s.claudeManager().SetEnabled(false)
 	r.s.applyClaudeCodeSettings()
-	if claudecode.Enabled() {
+	if r.s.claudeManager().Enabled() {
 		t.Fatal("loopback 이 아닌 주소에서 저장 값만 보고 켜졌다")
 	}
 	r.s.listenAddr = "127.0.0.1:8787"
 	r.s.applyClaudeCodeSettings()
-	if !claudecode.Enabled() {
+	if !r.s.claudeManager().Enabled() {
 		t.Fatal("loopback 에서는 저장 값대로 켜져야 한다")
 	}
 }

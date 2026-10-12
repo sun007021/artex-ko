@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"iter"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,19 +25,21 @@ type Options struct {
 }
 
 // Provider 는 llm.Provider 구현이다. 프로필마다 하나 만들어지지만 동시 실행 상한·한도 게이트·세션 표는
-// 모두 전역(defaultManager)을 공유한다.
+// 모두 주입받은 Manager 를 공유한다.
 type Provider struct {
 	opts Options
-	m    *manager
+	m    *Manager
 }
 
-// NewProvider 는 claude CLI 로 모델 턴을 만드는 llm.Provider 를 돌려준다.
-func NewProvider(opts Options) *Provider {
+func newProvider(m *Manager, opts Options) *Provider {
 	opts.Binary = strings.TrimSpace(opts.Binary)
-	return &Provider{opts: opts, m: defaultManager}
+	return &Provider{opts: opts, m: m}
 }
 
 var _ llm.Provider = (*Provider)(nil)
+
+// CloseSession 은 ARTEX 세션 ID 의 claude 프로세스를 정리한다(Manager.CloseSession).
+func (p *Provider) CloseSession(id string) { p.m.CloseSession(id) }
 
 // toolNote 는 시스템 프롬프트 꼬리에 붙는 도구 이름 규약이다. ARTEX 역할 프롬프트는 도구를 이름
 // 그대로(Bash, report_finding ...) 부르지만 claude 는 MCP 도구에 mcp__artex__ 접두사를 붙여 보여 준다.
@@ -72,6 +75,8 @@ func sessionKey(ctx context.Context, sys string, msgs []llm.Message) string {
 	if id := transcript.SessionIDFrom(ctx); id != "" {
 		return id
 	}
+	// 맨 앞 system-reminder(날짜 등)는 호출마다 달라지므로 키에서 뺀다.
+	_, msgs = splitReminder(msgs)
 	first := ""
 	for _, m := range msgs {
 		if m.Role == llm.RoleUser {
@@ -110,6 +115,14 @@ func (p *Provider) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	return acc.Message(), acc.StopReason, acc.Usage, nil
 }
 
+// stableSystem 은 시스템 프롬프트에서 호출마다 달라지는 시각을 시 단위로 뭉갠 문자열이다. 프롬프트의
+// {{.Now}} 는 초 단위로 갱신되는데(agent/prompt.go), 그대로 해시에 넣으면 대화 턴마다 프로세스를 다시
+// 띄워 전사를 재생하게 된다. 해시에만 쓰며 claude 에 넘기는 프롬프트 문구는 바꾸지 않는다 — 프로세스는
+// 시작 때의 시각을 그대로 갖고, 시각이 시 단위로 넘어가면 한 번 재동기화한다.
+func stableSystem(sys string) string { return timestampRE.ReplaceAllString(sys, "${1} ${2}h") }
+
+var timestampRE = regexp.MustCompile(`(\d{4}-\d{2}-\d{2})[ T](\d{2}):\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?(?:Z|[A-Z]{2,5}|[+-]\d{2}:?\d{2}))?`)
+
 // ---- 일회용(도구 없음) ----
 
 func (p *Provider) streamOneShot(ctx context.Context, req llm.CompletionRequest, yield func(llm.StreamEvent, error) bool) error {
@@ -122,7 +135,7 @@ func (p *Provider) streamOneShot(ctx context.Context, req llm.CompletionRequest,
 		return err
 	}
 	defer release()
-	if err := m.gate.check(ctx); err != nil {
+	if err := m.gates.check(ctx, p.opts.Model); err != nil {
 		return err
 	}
 	s := newSession(m, "oneshot")
@@ -138,9 +151,9 @@ func (p *Provider) streamOneShot(ctx context.Context, req llm.CompletionRequest,
 	}
 	_, err = s.consume(ctx, proc, yield)
 	if err == nil {
-		m.gate.success()
+		m.gates.success(p.opts.Model)
 	}
-	return m.noteResult(err)
+	return m.noteResult(p.opts.Model, err)
 }
 
 // ---- 장수명 세션(공급자 브리지) ----
@@ -153,10 +166,11 @@ func (p *Provider) streamSession(ctx context.Context, req llm.CompletionRequest,
 	sys := systemText(req.System) + toolNote
 	key := sessionKey(ctx, sys, req.Messages)
 	reminder, msgs := splitReminder(req.Messages)
-	sg := sigs(msgs)
 
-	s := m.session(key)
-	s.turn.Lock()
+	s, err := m.acquire(key)
+	if err != nil {
+		return err
+	}
 	defer s.turn.Unlock()
 	m.evictForRoom(s)
 
@@ -165,77 +179,120 @@ func (p *Provider) streamSession(ctx context.Context, req llm.CompletionRequest,
 		return err
 	}
 	defer release()
-	if err := m.gate.check(ctx); err != nil {
+	if err := m.gates.check(ctx, p.opts.Model); err != nil {
 		return err
 	}
 	s.setTools(req.Tools)
 
-	cfgKey, sysHash := p.cfgKey(), shortHash(sys)
+	t := &sessionTurn{
+		p: p, s: s, ctx: ctx, key: key, sys: sys, reminder: reminder, msgs: msgs, sg: sigs(msgs),
+		cfgKey: p.cfgKey(), sysHash: shortHash(stableSystem(sys)),
+	}
+	t.yield = func(ev llm.StreamEvent, err error) bool { t.yielded = true; return yield(ev, err) }
+
 	// 호출자에게 아직 아무것도 넘기지 않았다면 재사용한 프로세스가 턴 사이에 죽은 경우를 투명하게 복구한다
 	// (새 프로세스 + 전사 재생). 한 번만 시도하며, 새로 띄운 프로세스의 크래시는 그대로 오류가 된다.
-	yielded := false
-	yf := func(ev llm.StreamEvent, err error) bool { yielded = true; return yield(ev, err) }
 	forceFresh := false
-	var out turnOut
 	for {
-		var proc *proc
-		reason := "새 세션"
-		if !forceFresh {
-			proc, reason = s.plan(cfgKey, sysHash, sg)
-		}
-		reused := proc != nil
-		if reused {
-			sent, perr := s.resume(proc, msgs[len(s.syncedLen()):])
-			switch {
-			case perr != nil && !yielded:
-				s.logf("재사용한 프로세스에 입력을 쓰지 못함 — 재동기화: %v", perr)
-				forceFresh, reused, proc = true, false, nil
-				s.kill()
-				continue
-			case perr != nil:
-				return s.failTurn(perr)
-			case !sent:
-				reason, proc, reused = "대화가 이어붙일 수 없는 형태로 바뀜", nil, false
-			}
-		}
-		if proc == nil {
-			s.logf("재동기화 session=%s (%s)", key, reason)
-			s.kill()
-			np, serr := s.start(p.opts, sys, true)
-			if serr != nil {
-				return serr
-			}
-			proc = np
-			s.mu.Lock()
-			s.cfgKey, s.sysHash = cfgKey, sysHash
-			s.mu.Unlock()
-			if err := proc.send(userInputLine(renderTranscript(reminder, msgs))); err != nil {
-				return s.failTurn(err)
-			}
-		}
-		s.mu.Lock()
-		s.state = stBusy
-		s.synced = sg
-		s.lastActive = time.Now()
-		s.mu.Unlock()
-
-		var err error
-		out, err = s.consume(ctx, proc, yf)
-		if err == nil {
-			break
-		}
-		var ce *Error
-		if reused && !yielded && !forceFresh && ctx.Err() == nil && errors.As(err, &ce) && ce.Kind == KindCrash {
-			s.logf("재사용한 프로세스가 응답 전에 종료됨 — 재동기화 (%v)", err)
+		out, retry, err := t.attempt(forceFresh)
+		if retry && !forceFresh && t.mayRetry() {
 			forceFresh = true
-			s.kill()
 			continue
 		}
-		return s.failTurn(m.noteResult(err))
+		if err != nil {
+			return err
+		}
+		t.complete(out)
+		return nil
 	}
-	m.gate.success()
+}
+
+// sessionTurn 은 세션 위에서 모델 한 턴을 만드는 한 번의 호출이다. 이어 붙이기(attempt)와 마무리(complete)를
+// 나눠, 재시도 판단을 호출 루프(streamSession)에 둔다.
+type sessionTurn struct {
+	p   *Provider
+	s   *session
+	ctx context.Context
+	key string
+
+	sys, cfgKey, sysHash string
+	reminder             *llm.Message
+	msgs                 []llm.Message
+	sg                   []string
+
+	yield   func(llm.StreamEvent, error) bool
+	yielded bool // 호출자에게 이미 이벤트를 넘겼다(투명한 복구가 더는 불가능)
+}
+
+// mayRetry 는 복구용 재동기화를 시도해도 되는지 알려 준다: 호출자가 아직 살아 있고, 기능이 켜져 있고, 세션이
+// 닫히지 않았을 때만이다(끈 직후에 새 프로세스를 띄우지 않는다).
+func (t *sessionTurn) mayRetry() bool {
+	return t.ctx.Err() == nil && t.p.m.enabled.Load() && !t.s.isClosed()
+}
+
+// attempt 는 한 번 시도한다. retry=true 는 호출자에게 아무것도 넘기지 않은 채 재사용한 프로세스가 죽어
+// 새 프로세스로 한 번 더 시도해 볼 만하다는 뜻이다(err 는 그 원인; 재시도하지 않으면 그대로 반환된다).
+func (t *sessionTurn) attempt(forceFresh bool) (out turnOut, retry bool, err error) {
+	s, m := t.s, t.p.m
+	var pr *proc
+	reason := "새 세션"
+	if !forceFresh {
+		pr, reason = s.plan(t.cfgKey, t.sysHash, t.sg)
+	}
+	reused := pr != nil
+	if reused {
+		sent, perr := s.resume(pr, t.msgs[len(s.syncedLen()):])
+		switch {
+		case perr != nil && !t.yielded:
+			s.logf("재사용한 프로세스에 입력을 쓰지 못함 — 재동기화: %v", perr)
+			s.kill()
+			return turnOut{}, true, perr
+		case perr != nil:
+			return turnOut{}, false, s.failTurn(perr)
+		case !sent:
+			reason, pr, reused = "대화가 이어붙일 수 없는 형태로 바뀜", nil, false
+		}
+	}
+	if pr == nil {
+		s.logf("재동기화 session=%s (%s)", t.key, reason)
+		s.kill()
+		np, serr := s.start(t.p.opts, t.sys, true)
+		if serr != nil {
+			return turnOut{}, false, serr
+		}
+		pr = np
+		s.mu.Lock()
+		s.cfgKey, s.sysHash = t.cfgKey, t.sysHash
+		s.mu.Unlock()
+		if err := pr.send(userInputLine(renderTranscript(t.reminder, t.msgs))); err != nil {
+			return turnOut{}, false, s.failTurn(err)
+		}
+	}
 	s.mu.Lock()
-	s.synced = append(append([]string(nil), sg...), out.sig)
+	s.state = stBusy
+	s.synced = t.sg
+	s.lastActive = time.Now()
+	s.mu.Unlock()
+
+	out, err = s.consume(t.ctx, pr, t.yield)
+	if err == nil {
+		return out, false, nil
+	}
+	var ce *Error
+	if reused && !t.yielded && !forceFresh && t.ctx.Err() == nil && errors.As(err, &ce) && ce.Kind == KindCrash && t.mayRetry() {
+		s.logf("재사용한 프로세스가 응답 전에 종료됨 — 재동기화 (%v)", err)
+		s.kill()
+		return turnOut{}, true, err
+	}
+	return turnOut{}, false, s.failTurn(m.noteResult(t.p.opts.Model, err))
+}
+
+// complete 는 성공한 턴을 세션 상태에 반영한다.
+func (t *sessionTurn) complete(out turnOut) {
+	s := t.s
+	t.p.m.gates.success(t.p.opts.Model)
+	s.mu.Lock()
+	s.synced = append(append([]string(nil), t.sg...), out.sig)
 	s.lastActive = time.Now()
 	if out.parked {
 		s.state = stParked
@@ -243,189 +300,4 @@ func (p *Provider) streamSession(ctx context.Context, req llm.CompletionRequest,
 		s.state = stIdle
 	}
 	s.mu.Unlock()
-	return nil
-}
-
-// failTurn 은 실패한 턴 뒤에 세션을 정리한다. 프로세스가 어떤 상태인지 알 수 없으므로 죽이고, 다음 호출은
-// 재동기화로 처음부터 이어 간다.
-func (s *session) failTurn(err error) error {
-	s.kill()
-	return err
-}
-
-func (s *session) syncedLen() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.synced
-}
-
-// noteResult 는 결과를 전역 게이트에 반영하고 그대로 돌려준다.
-func (m *manager) noteResult(err error) error {
-	var ce *Error
-	if errors.As(err, &ce) {
-		m.gate.record(ce)
-	}
-	return err
-}
-
-// plan 은 이 요청을 기존 프로세스에 이어 붙일 수 있는지 판단한다. 이어 붙일 수 있으면 그 프로세스를,
-// 아니면 nil 과 이유를 돌려준다(호출자가 재동기화한다).
-func (s *session) plan(cfgKey, sysHash string, sg []string) (*proc, string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p := s.p
-	switch {
-	case p == nil:
-		return nil, "새 세션"
-	case func() bool {
-		select {
-		case <-p.closed:
-			return true
-		default:
-			return false
-		}
-	}():
-		return nil, "프로세스가 종료됨"
-	case p.broken:
-		return nil, "이전 호출이 중단됨"
-	case s.cfgKey != cfgKey:
-		return nil, "모델/강도/바이너리 설정이 바뀜"
-	case s.sysHash != sysHash:
-		return nil, "시스템 프롬프트가 바뀜"
-	case len(sg) <= len(s.synced) || !hasPrefix(sg, s.synced):
-		return nil, "대화 앞부분이 바뀜(압축/되감기)"
-	}
-	return p, ""
-}
-
-// resume 은 이미 흡수한 대화 뒤에 붙는 새 꼬리(delta)를 claude 세션에 넘긴다.
-//
-//	parked : delta 의 tool_result 를 보류 중인 tools/call 의 응답으로 돌려준다. tool_result 가 아닌 나머지 텍스트
-//	         (스키마 밖 알림, 수습 지시, 백그라운드 작업 알림 등)는 마지막 결과의 추가 텍스트 블록으로 접어 넣는다.
-//	         대기 중인 모든 호출에 결과가 있어야 한다.
-//	idle   : delta 의 사용자 텍스트를 stream-json 사용자 메시지 하나로 보낸다.
-//
-// sent=false 는 이어 붙일 수 없는 형태라는 뜻이다(재동기화).
-func (s *session) resume(p *proc, delta []llm.Message) (sent bool, err error) {
-	s.mu.Lock()
-	state := s.state
-	s.mu.Unlock()
-
-	var extra []string
-	results := map[string]llm.ContentBlock{}
-	for _, m := range delta {
-		if m.Role != llm.RoleUser {
-			return false, nil
-		}
-		for _, b := range m.Content {
-			switch b.Type {
-			case llm.BlockToolResult:
-				results[b.ToolUseID] = b
-			case llm.BlockText:
-				if strings.TrimSpace(b.Text) != "" {
-					extra = append(extra, b.Text)
-				}
-			}
-		}
-	}
-
-	if state == stParked {
-		s.mu.Lock()
-		aws := append([]*await(nil), p.awaiting...)
-		s.mu.Unlock()
-		if len(aws) == 0 {
-			return false, nil
-		}
-		for _, a := range aws {
-			if _, ok := results[a.id]; !ok {
-				return false, nil
-			}
-		}
-		for i, a := range aws {
-			b := results[a.id]
-			r := mcpResult{IsError: b.IsError}
-			if t := resultText(b); t != "" || len(b.Content) == 0 {
-				r.Text = append(r.Text, t)
-			}
-			if i == len(aws)-1 {
-				r.Text = append(r.Text, extra...)
-			}
-			s.deliver(a, r)
-		}
-		return true, nil
-	}
-	if len(results) > 0 || len(extra) == 0 {
-		return false, nil // 짝이 없는 tool_result 이거나 보낼 것이 없다
-	}
-	return true, p.send(userInputLine(extra...))
-}
-
-// ---- 이벤트 소비 ----
-
-type turnOut struct {
-	sig    string // 이번 턴에 만든 assistant 메시지의 서명
-	parked bool   // 도구 호출로 끝났다(결과 대기)
-}
-
-// consume 은 한 턴의 이벤트를 ARTEX 로 흘려 보낸다. 모델이 ARTEX 도구를 부르며 끝나면 parked 로 돌아오고,
-// 보류된 tools/call 은 열어 둔다. 그 외 종료는 claude 가 result 를 낼 때까지 기다려 stdout 을 비운다.
-func (s *session) consume(ctx context.Context, p *proc, yield func(llm.StreamEvent, error) bool) (turnOut, error) {
-	acc := llm.NewAccumulator()
-	ended := false
-	var resultWait <-chan time.Time
-	finish := func(parked bool) turnOut {
-		return turnOut{sig: msgSig(acc.Message()), parked: parked}
-	}
-	for {
-		select {
-		case ev := <-p.events:
-			switch ev.kind {
-			case evEmit:
-				if ended {
-					continue
-				}
-				acc.Add(ev.ev)
-				if !yield(ev.ev, nil) {
-					return turnOut{}, errConsumerStopped
-				}
-			case evEnd:
-				ended = true
-				if ev.stop == "tool_use" && len(ev.toolIDs) > 0 {
-					return finish(true), nil
-				}
-				resultWait = time.After(resultWaitTimeout)
-			case evResult:
-				if ev.isErr {
-					if ev.err != nil && (!ended || ev.err.Kind != KindUnknown) {
-						return turnOut{}, ev.err
-					}
-					s.logf("result 가 오류를 보고했지만 응답은 완결됨: %v", ev.err)
-				}
-				if !ended { // 메시지 없이 끝난 턴: 빈 응답으로 마감한다
-					for _, e := range []llm.StreamEvent{{Type: llm.SEMessageDelta, StopReason: "end_turn"}, {Type: llm.SEMessageStop}} {
-						acc.Add(e)
-						if !yield(e, nil) {
-							return turnOut{}, errConsumerStopped
-						}
-					}
-				}
-				return finish(false), nil
-			case evFail:
-				return turnOut{}, ev.err
-			case evExit:
-				if ended {
-					return finish(false), nil
-				}
-				return turnOut{}, ev.err
-			}
-		case <-resultWait:
-			s.logf("result 를 기다리다 시간 초과(응답은 완결됨) — 다음 호출에서 재동기화")
-			s.mu.Lock()
-			p.broken = true
-			s.mu.Unlock()
-			return finish(false), nil
-		case <-ctx.Done():
-			return turnOut{}, ctx.Err()
-		}
-	}
 }
