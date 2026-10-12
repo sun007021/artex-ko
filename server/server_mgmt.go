@@ -1891,7 +1891,7 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	p := body.LLMProfile
 	p.APIKey = body.APIKey
 	p.Streaming = body.Streaming == nil || *body.Streaming
-	if p.AuthMode != "" && p.AuthMode != db.AuthModeChatGPT {
+	if p.AuthMode != "" && p.AuthMode != db.AuthModeChatGPT && p.AuthMode != db.AuthModeClaudeCode {
 		writeErr(w, 400, errMgmtLLMBadAuthMode)
 		return
 	}
@@ -1906,6 +1906,18 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	var prev *db.LLMProfile
 	if p.ID != 0 {
 		prev, _ = pg.ProfileByID(p.ID)
+	}
+	// claude-code 프로필: 설치 단위로 켜져 있어야 새로 만들거나 이 방식으로 바꿀 수 있다(옵트인). 이미 이
+	// 방식인 프로필의 수정은 꺼져 있어도 허용한다. API Key 전용 필드는 정규화로 비운다.
+	if p.AuthMode == db.AuthModeClaudeCode {
+		if !pg.ClaudeCodeSettings().Enabled && (prev == nil || prev.AuthMode != db.AuthModeClaudeCode) {
+			writeErr(w, 400, errClaudeCodeDisabled)
+			return
+		}
+		if msg := normalizeClaudeCodeProfile(&p); msg != "" {
+			writeErr(w, 400, msg)
+			return
+		}
 	}
 	// 输出上限:负数无意义,归零(= 不发送该字段)。字段名开关只有 Chat Completions
 	// 用得上——anthropic 与 openai-responses 各自定死了字段名,存下来只会误导后续读者,

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/claudecode"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/llm"
@@ -436,6 +437,9 @@ func isRetryableStreamError(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
+	if strings.Contains(s, claudecode.SetupErrorMarker) { // claude 미설치/구버전/정책 거부: 되풀이해도 같다
+		return false
+	}
 	if strings.Contains(s, "too long") || strings.Contains(s, "context length") ||
 		strings.Contains(s, "context_length") || strings.Contains(s, "maximum context") ||
 		strings.Contains(s, "status 413") {

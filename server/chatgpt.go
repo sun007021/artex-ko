@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/claudecode"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/siwc"
 )
@@ -86,6 +87,8 @@ type chatgptRuntime struct {
 // SetListenAddr 는 서버가 듣는 주소를 알려 준다. 브라우저가 loopback 이 아닌 이름으로 접속해
 // 포트를 알 수 없을 때 리디렉션 포트의 기본값으로 쓴다.
 func (s *Server) SetListenAddr(addr string) {
+	s.listenAddr = addr
+	s.applyClaudeCodeSettings() // 바인딩 주소를 알았으니 claude-code 의 loopback 조건을 다시 판정한다
 	if _, port, err := net.SplitHostPort(addr); err == nil {
 		if n, err := strconv.Atoi(port); err == nil && n > 0 && n < 65536 {
 			s.listenPort = n
@@ -191,6 +194,10 @@ func (s *Server) profileAgentConfig(p *db.LLMProfile) (cfg agent.Config, ready b
 		// 구독 경로: 스트리밍 고정, 출력 상한(max_output_tokens)과 세션 헤더는 지원되지 않아
 		// 보내지 않는다(MaxTokens 는 0 = 상한 없음으로 둔다).
 		cfg.Stream = true
+	} else if p.AuthMode == db.AuthModeClaudeCode {
+		// claude CLI(구독) 경로: 모델·추론 강도는 프로필 값 그대로 --model/--effort 로 간다. 켜져 있어야 준비됨.
+		cfg = s.claudeCodeConfig(p.Model, p.ReasoningEffort, p.Proxy)
+		ready = claudecode.Enabled()
 	} else {
 		cfg = agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
 		ready = cfg.APIKey != ""

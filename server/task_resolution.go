@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/Autumn-27/artex/claudecode"
 	"github.com/Autumn-27/artex/db"
 )
 
@@ -42,7 +43,12 @@ func (s *Server) resolutionFromProfile(p *db.LLMProfile, source string) taskLLMR
 		Model:     p.Model,
 		Source:    source,
 	}
-	if p.AuthMode == db.AuthModeChatGPT {
+	if p.AuthMode == db.AuthModeClaudeCode {
+		if !claudecode.Enabled() {
+			result.Reason = reasonLLMProfileClaudeCodeOff
+			return result
+		}
+	} else if p.AuthMode == db.AuthModeChatGPT {
 		if !chatgptReady(s.chatgptSession(p)) {
 			result.Reason = reasonLLMProfileChatGPTOff
 			return result

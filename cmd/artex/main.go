@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/claudecode"
 	"github.com/Autumn-27/artex/config"
 	"github.com/Autumn-27/artex/selfupdate"
 	"github.com/Autumn-27/artex/server"
@@ -115,6 +116,7 @@ func run() int {
 	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
 	srv.WarnIfExposed(*addr)
 	srv.SetListenAddr(*addr)
+	defer claudecode.CloseAll() // claude-code 인증 방식이 띄운 claude 프로세스를 종료 때 모두 정리한다
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),
