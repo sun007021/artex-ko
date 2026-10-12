@@ -3245,7 +3245,9 @@
       "active": "활성됨",
       "activate": "활성으로 설정",
       "deleteAria": "설정 삭제",
-      "chatgptBadge": "ChatGPT"
+      "chatgptBadge": "ChatGPT",
+      "claudeCodeBadge": "Claude Code",
+      "defaultModel": "claude 기본 모델"
     },
     "health": {
       "noKey": {
@@ -3267,6 +3269,10 @@
       "chatgptNoPlan": {
         "label": "권한 필요",
         "hint": "ChatGPT 플랜 사용 권한이 허가되지 않았습니다. 다시 로그인해 권한을 허용하세요"
+      },
+      "claudeCodeOff": {
+        "label": "꺼짐",
+        "hint": "claude-code 인증 방식이 꺼져 있어 호출할 수 없습니다. 프로필 편집에서 켜세요"
       }
     },
     "pool": {
@@ -3416,7 +3422,8 @@
       "authMode": {
         "label": "인증 방식",
         "apikey": "API Key",
-        "chatgpt": "ChatGPT 구독 (Plus/Pro)"
+        "chatgpt": "ChatGPT 구독 (Plus/Pro)",
+        "claudeCode": "Claude Code (구독, 개인 로컬 사용)"
       }
     },
     "retryLayer": {
@@ -3533,6 +3540,70 @@
         "logoutFailed": "로그아웃 실패: {msg}",
         "loginFirst": "먼저 ChatGPT에 로그인하세요",
         "testFirst": "연결을 테스트하려면 먼저 저장하고 ChatGPT에 로그인하세요"
+      }
+    },
+    "claudeCode": {
+      "title": "Claude Code (구독, 개인 로컬 사용)",
+      "intro": "사용자가 직접 로그인한 공식 claude CLI(Claude Pro/Max 구독)를 헤드리스 모드로 구동해 모델 턴을 만듭니다. ARTEX 는 Claude 자격 증명을 읽거나 저장하거나 전달하지 않고 claude 바이너리를 수정하지 않습니다. 에이전트 루프·도구·권한·기록은 API Key 경로와 같은 ARTEX 코드가 처리합니다.",
+      "modelPlaceholder": "비우면 claude 기본 모델 · 예: sonnet, opus",
+      "modelHint": "claude 의 --model 로 그대로 전달됩니다. 별칭(sonnet, opus 등)이나 전체 모델 이름을 직접 입력하세요. 비우면 claude 의 기본 모델을 씁니다.",
+      "effortHint": "claude 의 --effort 로 전달됩니다(low, medium, high, xhigh, max). 모델이 지원하지 않는 값은 연결 테스트에서 오류로 드러납니다. 기본값은 값을 보내지 않습니다.",
+      "limits": "이 방식은 API Key, Base URL, 출력 토큰 상한(max_tokens), 비스트리밍, 세션 헤더, 속도 제한(초당/분당), thinking 방식을 쓰지 않아 숨겨 두었습니다. 출력 길이와 사고량은 claude 가 정합니다. 동시에 모델 응답을 만드는 claude 프로세스 수는 위의 동시 실행 상한이 전역으로 제한합니다.",
+      "notice": {
+        "title": "반드시 읽으세요",
+        "personal": "개인 로컬 사용 전용입니다. 본인의 구독으로, 본인의 PC 에서만 쓰세요.",
+        "noExpose": "이 ARTEX 인스턴스를 다른 사람에게 노출하거나 구독을 공유하지 마세요. 127.0.0.1 에만 바인딩해 실행하세요(계정·구독 공유 금지).",
+        "authorized": "허가받은 대상만 점검하세요. 승인되지 않은 대상에 대한 사용은 금지됩니다.",
+        "noBypass": "Claude 의 거절을 우회하려고 시도하지 마세요. 모델이 거절하면 그 결과를 그대로 받아들이세요.",
+        "enforce": "자동화된 사용이 구독 약관의 범위에 드는지는 Anthropic 이 판단하며, 약관을 어기면 Anthropic 이 이용을 제한하거나 정지할 수 있습니다. 모든 책임은 사용자에게 있습니다.",
+        "env": "claude 를 구동할 때 ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN 환경변수는 자식 프로세스에서 제거됩니다(API 과금 방지). 구독 한도에 걸리면 재시도하지 않고 멈추며, 계정을 바꿔 가며 쓰지 않습니다."
+      },
+      "sources": {
+        "legal": "법적·준수 사항",
+        "auth": "인증",
+        "headless": "헤드리스 사용",
+        "cli": "CLI 레퍼런스",
+        "terms": "소비자 약관"
+      },
+      "settings": {
+        "enable": "claude-code 켜기",
+        "enableHint": "설치 전체에 적용되는 옵트인 스위치입니다. 기본은 꺼짐이며, 꺼져 있으면 이 인증 방식의 프로필을 만들 수 없고 호출도 거절됩니다.",
+        "ack": "위 안내를 모두 읽었고, 본인 구독으로 본인 PC 에서만, 허가받은 대상에만 쓰며, 이 ARTEX 를 다른 사람에게 노출하지 않겠습니다.",
+        "binary": "claude 실행 파일 경로",
+        "binaryHint": "비우면 PATH 의 claude 를 씁니다. 셸을 거치지 않고 직접 실행됩니다.",
+        "concurrent": "동시 실행 상한",
+        "concurrentHint": "동시에 모델 응답을 만드는 claude 프로세스의 전역 최대 수입니다(기본 1, 최대 {max}). 도구 실행을 기다리는 프로세스는 세지 않습니다.",
+        "apply": "적용",
+        "notLoopback": "이 ARTEX 가 127.0.0.1 이외의 주소에서 접속 가능하게 실행 중이라 켤 수 없습니다. 본인 PC 에서만 접근되도록 127.0.0.1 에 바인딩해 실행하세요."
+      },
+      "status": {
+        "title": "claude 상태",
+        "check": "다시 확인",
+        "checking": "확인 중…",
+        "usable": "사용 가능",
+        "version": "버전",
+        "method": "로그인 방식",
+        "loginHow": "로그인은 ARTEX 가 하지 않습니다. 터미널에서 직접 실행하세요:",
+        "problem": {
+          "not_installed": "설치 필요",
+          "too_old": "업데이트 필요",
+          "not_logged_in": "로그인 필요",
+          "api_billing": "API 과금 경로",
+          "unknown": "확인 불가"
+        },
+        "hint": {
+          "not_installed": "claude 실행 파일을 찾을 수 없습니다. Claude Code 를 설치하거나 위에 실행 파일 경로를 지정하세요.",
+          "too_old": "Claude Code 버전이 너무 낮습니다. `claude update` 로 갱신하세요.",
+          "not_logged_in": "claude 가 로그인되어 있지 않습니다. 본인 구독으로 직접 로그인하세요.",
+          "api_billing": "claude 가 구독이 아닌 인증(API Key 등)을 쓰고 있어 API 과금이 됩니다. 구독 로그인(claude.ai)만 허용되므로 `claude auth login` 으로 구독에 로그인하세요.",
+          "unknown": "claude 상태를 확인하지 못했습니다. 터미널에서 `claude auth status` 를 직접 실행해 보세요."
+        }
+      },
+      "toast": {
+        "nameRequired": "이름을 입력하세요",
+        "needAck": "켜려면 위 안내를 읽었다는 확인란에 체크하세요",
+        "applied": "claude-code 설정을 적용했습니다",
+        "applyFailed": "설정 적용 실패: {msg}"
       }
     }
   },

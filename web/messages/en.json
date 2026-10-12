@@ -3245,7 +3245,9 @@
       "active": "Active",
       "activate": "Set active",
       "deleteAria": "Delete profile",
-      "chatgptBadge": "ChatGPT"
+      "chatgptBadge": "ChatGPT",
+      "claudeCodeBadge": "Claude Code",
+      "defaultModel": "claude default model"
     },
     "health": {
       "noKey": {
@@ -3267,6 +3269,10 @@
       "chatgptNoPlan": {
         "label": "Permission needed",
         "hint": "ChatGPT plan usage was not granted. Sign in again and allow it"
+      },
+      "claudeCodeOff": {
+        "label": "Off",
+        "hint": "The claude-code authentication method is turned off, so calls cannot be made. Turn it on in the profile editor"
       }
     },
     "pool": {
@@ -3416,7 +3422,8 @@
       "authMode": {
         "label": "Authentication",
         "apikey": "API Key",
-        "chatgpt": "ChatGPT subscription (Plus/Pro)"
+        "chatgpt": "ChatGPT subscription (Plus/Pro)",
+        "claudeCode": "Claude Code (subscription, personal local use)"
       }
     },
     "retryLayer": {
@@ -3533,6 +3540,70 @@
         "logoutFailed": "Sign-out failed: {msg}",
         "loginFirst": "Sign in to ChatGPT first",
         "testFirst": "Save the profile and sign in to ChatGPT before testing the connection"
+      }
+    },
+    "claudeCode": {
+      "title": "Claude Code (subscription, personal local use)",
+      "intro": "Runs the official claude CLI that you signed in to yourself (a Claude Pro/Max subscription) in headless mode to produce model turns. ARTEX never reads, stores or forwards Claude credentials and does not modify the claude binary. The agent loop, tools, permissions and records are handled by the same ARTEX code as the API Key path.",
+      "modelPlaceholder": "Blank = claude default model · e.g. sonnet, opus",
+      "modelHint": "Passed to claude as --model exactly as typed. Enter an alias (sonnet, opus, ...) or a full model name. Leave it blank to use claude's default model.",
+      "effortHint": "Passed to claude as --effort (low, medium, high, xhigh, max). A value the model does not support shows up as an error in the connection test. The default sends no value.",
+      "limits": "This method does not use API Key, Base URL, the output token cap (max_tokens), non-streaming mode, the session header, rate limits (per second/minute) or the thinking type, so they are hidden. Output length and thinking amount are decided by claude. The number of claude processes producing a model response at the same time is capped globally by the concurrency limit above.",
+      "notice": {
+        "title": "Read this first",
+        "personal": "For personal local use only: use your own subscription, on your own PC.",
+        "noExpose": "Do not expose this ARTEX instance to other people or share your subscription. Run it bound to 127.0.0.1 only (no account or subscription sharing).",
+        "authorized": "Test only targets you are authorized to test. Use against unauthorized targets is prohibited.",
+        "noBypass": "Do not try to bypass Claude's refusals. If the model declines, accept that result.",
+        "enforce": "Whether automated use falls within the subscription terms is Anthropic's call, and Anthropic may restrict or suspend access if the terms are violated. You are fully responsible for your use.",
+        "env": "When claude is launched, the ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN environment variables are removed from the child process (to avoid API billing). When a subscription limit is hit, ARTEX stops instead of retrying, and it never switches between accounts."
+      },
+      "sources": {
+        "legal": "Legal and compliance",
+        "auth": "Authentication",
+        "headless": "Headless usage",
+        "cli": "CLI reference",
+        "terms": "Consumer terms"
+      },
+      "settings": {
+        "enable": "Turn on claude-code",
+        "enableHint": "An opt-in switch for the whole installation. It is off by default; while off, profiles of this type cannot be created and calls are refused.",
+        "ack": "I have read all of the above. I will use this only with my own subscription, on my own PC, against authorized targets, and I will not expose this ARTEX to other people.",
+        "binary": "Path to the claude executable",
+        "binaryHint": "Leave blank to use claude from PATH. It is executed directly, without a shell.",
+        "concurrent": "Concurrency limit",
+        "concurrentHint": "Global maximum number of claude processes producing a model response at the same time (default 1, max {max}). Processes waiting for a tool to run are not counted.",
+        "apply": "Apply",
+        "notLoopback": "This ARTEX is reachable on an address other than 127.0.0.1, so it cannot be turned on. Run it bound to 127.0.0.1 so only your own PC can reach it."
+      },
+      "status": {
+        "title": "claude status",
+        "check": "Check again",
+        "checking": "Checking…",
+        "usable": "Ready",
+        "version": "Version",
+        "method": "Sign-in method",
+        "loginHow": "ARTEX does not sign you in. Run this yourself in a terminal:",
+        "problem": {
+          "not_installed": "Install needed",
+          "too_old": "Update needed",
+          "not_logged_in": "Sign-in needed",
+          "api_billing": "API billing path",
+          "unknown": "Unknown"
+        },
+        "hint": {
+          "not_installed": "The claude executable was not found. Install Claude Code or set the executable path above.",
+          "too_old": "The Claude Code version is too old. Update it with `claude update`.",
+          "not_logged_in": "claude is not signed in. Sign in yourself with your own subscription.",
+          "api_billing": "claude is using a non-subscription authentication (such as an API key), which bills the API. Only subscription sign-in (claude.ai) is allowed, so sign in to your subscription with `claude auth login`.",
+          "unknown": "Could not determine the state of claude. Run `claude auth status` yourself in a terminal."
+        }
+      },
+      "toast": {
+        "nameRequired": "Enter a name",
+        "needAck": "To turn it on, tick the box confirming you read the notice above",
+        "applied": "claude-code settings applied",
+        "applyFailed": "Could not apply the settings: {msg}"
       }
     }
   },

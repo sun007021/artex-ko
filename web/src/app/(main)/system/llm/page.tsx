@@ -32,6 +32,7 @@ import type { ChatGPTStatus, LLMPoolMember, LLMPoolStatus, LLMProfile, LLMRetryO
 import { cn } from "@/lib/utils";
 
 import { ChatGPTAccountPanel } from "./_components/chatgpt";
+import { ClaudeCodePanel } from "./_components/claudecode";
 import { ProfileRetryFields, RetryPolicyPanel, ZERO_OVERRIDE } from "./_components/retry";
 
 // 思考开关(thinking.type)与思考强度(reasoning_effort)是两个【互相独立】的字段，
@@ -52,6 +53,12 @@ function cooldownText(secs: number) {
 // 其余状态来自轮询的熔断记录（轮询关着时不会产生新记录，此时「正常」= 没有已知故障）。
 // 文案走 i18n（llmPage.health.*），所以把 t 传进来由调用方注入。
 type Health = { label: string; cls: string; hint?: string };
+
+type AuthMode = "" | "chatgpt" | "claude-code";
+
+function authModeOf(p?: LLMProfile | null): AuthMode {
+  return p?.auth_mode === "chatgpt" || p?.auth_mode === "claude-code" ? p.auth_mode : "";
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 轮询配置抽屉
@@ -284,13 +291,13 @@ function ProfileSheet({
   const [models, setModels] = React.useState<{ value: string; label?: string }[]>([]);
   const [loadingModels, setLoadingModels] = React.useState(false);
   const [modelsOpen, setModelsOpen] = React.useState(false);
-  // 인증 방식: ""=API Key | "chatgpt"=ChatGPT 구독(Sign in with ChatGPT).
-  const [authMode, setAuthMode] = React.useState<"" | "chatgpt">("");
+  // 인증 방식: ""=API Key | "chatgpt"=ChatGPT 구독(Sign in with ChatGPT) | "claude-code"=공식 claude CLI(개인 로컬 사용).
+  const [authMode, setAuthMode] = React.useState<AuthMode>("");
   // 새 프로필을 로그인 때문에 먼저 저장했다면 그 id (시트를 닫기 전까지는 이후 저장이 갱신이 된다).
   const [createdId, setCreatedId] = React.useState<number | undefined>(undefined);
   const [chatgptStatus, setChatgptStatus] = React.useState<ChatGPTStatus | null>(null);
   // 서버에 저장되어 있는 인증 방식. 로그인을 위해 먼저 저장하면 prop 의 profile 보다 앞서간다.
-  const [savedAuthMode, setSavedAuthMode] = React.useState<"" | "chatgpt">("");
+  const [savedAuthMode, setSavedAuthMode] = React.useState<AuthMode>("");
 
   // 思考开关 / 上限字段名 / 思考强度三组选项的标签走 i18n，故在组件内按当前语言构造。
   const THINKING_TYPES: { value: string; label: string }[] = [
@@ -346,14 +353,17 @@ function ProfileSheet({
     setKeyHint(profile?.api_key_hint ?? "");
     setModels([]);
     setModelsOpen(false);
-    setAuthMode(profile?.auth_mode === "chatgpt" ? "chatgpt" : "");
-    setSavedAuthMode(profile?.auth_mode === "chatgpt" ? "chatgpt" : "");
+    setAuthMode(authModeOf(profile));
+    setSavedAuthMode(authModeOf(profile));
     setCreatedId(undefined);
     setChatgptStatus(null);
   }, [open, profile]);
 
   const profileId = profile ? Number(profile.id) : createdId;
   const chatgpt = authMode === "chatgpt";
+  const claudeCode = authMode === "claude-code";
+  // 구독 방식(ChatGPT/claude-code)은 API Key·Base URL·출력 상한·세션 헤더·비스트리밍을 쓰지 않는다.
+  const subscription = chatgpt || claudeCode;
 
   // quiet: 로그인 직후 자동 조회 — 목록 팝오버를 열지 않고 실패도 알리지 않는다.
   async function loadModels(quiet = false) {
@@ -420,11 +430,12 @@ function ProfileSheet({
     }
     setTesting(true);
     try {
+      // claude-code: 사용자가 로그인해 둔 claude CLI 를 실제로 한 번 구동해 짧은 응답을 받는다(모델·강도는 폼 값).
       // ChatGPT 구독: 저장된 프로필의 로그인으로 실제 최소 호출을 보낸다(모델·강도는 폼 값).
-      const r = chatgpt
+      const r = claudeCode
         ? await api.testLLM(
-            "openai-responses",
-            model,
+            "anthropic",
+            model.trim(),
             "",
             "",
             proxy,
@@ -433,9 +444,23 @@ function ProfileSheet({
             profileId,
             true,
             "",
-            "chatgpt",
+            "claude-code",
           )
-        : await testPlainConnection();
+        : chatgpt
+          ? await api.testLLM(
+              "openai-responses",
+              model,
+              "",
+              "",
+              proxy,
+              "",
+              toStore(effort),
+              profileId,
+              true,
+              "",
+              "chatgpt",
+            )
+          : await testPlainConnection();
       showTestResult(r);
     } catch (e) {
       toast.error(t("profile.toast.testError", { msg: (e as Error).message }));
@@ -473,11 +498,12 @@ function ProfileSheet({
   // 폼을 저장해 프로필 id 를 돌려준다. 검증에 실패하면 알리고 null. 로그인처럼 저장 전에 id 가
   // 필요한 동작도 이 함수를 쓴다(새 프로필이면 createdId 를 기억해 이후 저장이 갱신이 되게 한다).
   async function persist(): Promise<number | null> {
-    if (!name.trim() || !model.trim()) {
-      toast.error(t("profile.toast.nameModelRequired"));
+    // claude-code 는 모델을 비워 두면 claude 의 기본 모델을 쓴다.
+    if (!name.trim() || (!claudeCode && !model.trim())) {
+      toast.error(t(claudeCode ? "claudeCode.toast.nameRequired" : "profile.toast.nameModelRequired"));
       return null;
     }
-    if (!chatgpt && savedAuthMode === "chatgpt" && !apiKey.trim()) {
+    if (authMode === "" && savedAuthMode === "chatgpt" && !apiKey.trim()) {
       // 구독 → API Key 로 바꾸면 ChatGPT 로그인이 폐기되므로 키가 반드시 필요하다.
       toast.error(t("profile.toast.apiKeyRequiredSwitch"));
       return null;
@@ -488,24 +514,25 @@ function ProfileSheet({
       name: name.trim(),
       // 구독 프로필은 서버가 형식·Base URL·키·출력 상한·세션 헤더·스트리밍을 정규화한다.
       // 화면이 모순된 값을 보내지 않도록 같은 값으로 맞춰 보낸다.
-      format: chatgpt ? "openai-responses" : format,
+      format: chatgpt ? "openai-responses" : claudeCode ? "anthropic" : format,
       model: model.trim(),
-      base_url: chatgpt ? "" : baseUrl.trim(),
+      base_url: subscription ? "" : baseUrl.trim(),
       proxy: proxy.trim(),
-      api_key: chatgpt ? "" : apiKey,
-      rate_per_second: Number(rps) || 0,
-      rate_per_minute: Number(rpm) || 0,
+      api_key: subscription ? "" : apiKey,
+      // claude-code 는 속도 제한(rate_per_*)을 쓰지 않는다(동시 실행 상한이 대신한다).
+      rate_per_second: claudeCode ? 0 : Number(rps) || 0,
+      rate_per_minute: claudeCode ? 0 : Number(rpm) || 0,
       context_window_k: Number(cw) || 0,
-      thinking_type: chatgpt ? "" : toStore(thinkingType),
+      thinking_type: subscription ? "" : toStore(thinkingType),
       reasoning_effort: toStore(effort),
       priority: Number(priority) || 0,
       pool_exclude: poolExclude,
-      streaming: chatgpt ? true : streaming,
-      max_tokens: chatgpt ? 0 : Math.max(0, Number(maxTokens) || 0),
+      streaming: subscription ? true : streaming,
+      max_tokens: subscription ? 0 : Math.max(0, Number(maxTokens) || 0),
       // 字段名开关只对 openai(Chat Completions) 有意义，其它格式一律回落到默认；
       // 后端也会再做一次同样的归一化，这里只是别让 UI 送出自相矛盾的值。
-      max_tokens_field: !chatgpt && format === "openai" ? toStore(maxTokensField) : "",
-      session_header_key: chatgpt ? "" : sessionHeaderKey.trim(),
+      max_tokens_field: !subscription && format === "openai" ? toStore(maxTokensField) : "",
+      session_header_key: subscription ? "" : sessionHeaderKey.trim(),
       retry,
       auth_mode: authMode,
     });
@@ -575,11 +602,12 @@ function ProfileSheet({
             <div className="grid gap-2">
               <Label>{t("profile.authMode.label")}</Label>
               <Select
-                value={authMode === "chatgpt" ? "chatgpt" : "apikey"}
+                value={authMode === "" ? "apikey" : authMode}
                 onValueChange={(v) => {
-                  setAuthMode(v === "chatgpt" ? "chatgpt" : "");
+                  setAuthMode(v === "chatgpt" || v === "claude-code" ? v : "");
                   // 구독 방식이 지원하지 않는 강도(max)는 기본값으로 돌린다.
                   if (v === "chatgpt" && !CHATGPT_EFFORT_LEVELS.some((o) => o.value === effort)) setEffort(NONE);
+                  if (v === "claude-code" && !EFFORT_LEVELS.some((o) => o.value === effort)) setEffort(NONE);
                   setModels([]);
                 }}
               >
@@ -589,12 +617,13 @@ function ProfileSheet({
                 <SelectContent>
                   <SelectItem value="apikey">{t("profile.authMode.apikey")}</SelectItem>
                   <SelectItem value="chatgpt">{t("profile.authMode.chatgpt")}</SelectItem>
+                  <SelectItem value="claude-code">{t("profile.authMode.claudeCode")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           </div>
 
-          {!chatgpt && (
+          {!subscription && (
             <div className="grid gap-2">
               <Label>{t("profile.format.label")}</Label>
               <Select value={format} onValueChange={(v) => setFormat(v as "anthropic" | "openai" | "openai-responses")}>
@@ -613,6 +642,7 @@ function ProfileSheet({
           {chatgpt && (
             <ChatGPTAccountPanel profileId={profileId} ensureSaved={ensureSaved} onStatus={setChatgptStatus} />
           )}
+          {claudeCode && <ClaudeCodePanel />}
 
           <div className="grid gap-2">
             <Label htmlFor="p-model">{t("profile.model.label")}</Label>
@@ -620,50 +650,53 @@ function ProfileSheet({
               <Input
                 id="p-model"
                 className="font-mono"
-                placeholder="claude-opus-4-8"
+                placeholder={claudeCode ? t("claudeCode.modelPlaceholder") : "claude-opus-4-8"}
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
               />
               {/* modal: 这个 Popover 的内容被 portal 到 <body>，在 Sheet 的滚动锁之外，
                   不加 modal 时列表能渲染却滚不动。modal 让它自己持有最上层滚动锁。 */}
-              <Popover open={modelsOpen} onOpenChange={setModelsOpen} modal>
-                <PopoverTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon"
-                    className="shrink-0"
-                    disabled={loadingModels}
-                    onClick={() => void loadModels()}
-                    title={t("profile.model.loadTitle")}
-                  >
-                    {loadingModels ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
-                  </Button>
-                </PopoverTrigger>
-                {models.length > 0 && (
-                  <PopoverContent className="max-h-72 w-72 gap-0 overflow-y-auto overscroll-contain p-1" align="end">
-                    {models.map((m) => (
-                      <button
-                        key={m.value}
-                        type="button"
-                        className="w-full shrink-0 rounded-md px-2 py-1.5 text-left font-mono text-xs hover:bg-accent hover:text-accent-foreground"
-                        onClick={() => {
-                          setModel(m.value);
-                          setModelsOpen(false);
-                        }}
-                      >
-                        {m.value}
-                        {m.label && <span className="block font-sans text-muted-foreground">{m.label}</span>}
-                      </button>
-                    ))}
-                  </PopoverContent>
-                )}
-              </Popover>
+              {!claudeCode && (
+                <Popover open={modelsOpen} onOpenChange={setModelsOpen} modal>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="shrink-0"
+                      disabled={loadingModels}
+                      onClick={() => void loadModels()}
+                      title={t("profile.model.loadTitle")}
+                    >
+                      {loadingModels ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
+                    </Button>
+                  </PopoverTrigger>
+                  {models.length > 0 && (
+                    <PopoverContent className="max-h-72 w-72 gap-0 overflow-y-auto overscroll-contain p-1" align="end">
+                      {models.map((m) => (
+                        <button
+                          key={m.value}
+                          type="button"
+                          className="w-full shrink-0 rounded-md px-2 py-1.5 text-left font-mono text-xs hover:bg-accent hover:text-accent-foreground"
+                          onClick={() => {
+                            setModel(m.value);
+                            setModelsOpen(false);
+                          }}
+                        >
+                          {m.value}
+                          {m.label && <span className="block font-sans text-muted-foreground">{m.label}</span>}
+                        </button>
+                      ))}
+                    </PopoverContent>
+                  )}
+                </Popover>
+              )}
             </div>
             {chatgpt && <p className="text-muted-foreground text-xs">{t("chatgpt.modelHint")}</p>}
+            {claudeCode && <p className="text-muted-foreground text-xs">{t("claudeCode.modelHint")}</p>}
           </div>
 
-          {!chatgpt && (
+          {!subscription && (
             <div className="grid gap-2">
               <Label htmlFor="p-base-url">{t("profile.baseUrl.label")}</Label>
               <Input
@@ -688,7 +721,7 @@ function ProfileSheet({
             <p className="text-muted-foreground text-xs">{t("profile.proxy.hint")}</p>
           </div>
 
-          {!chatgpt && (
+          {!subscription && (
             <>
               <div className="grid gap-2">
                 <Label htmlFor="p-session-header">{t("profile.sessionHeader.label")}</Label>
@@ -717,15 +750,19 @@ function ProfileSheet({
             </>
           )}
 
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="grid gap-2">
-              <Label htmlFor="p-rps">{t("profile.rps")}</Label>
-              <Input id="p-rps" type="number" min={0} value={rps} onChange={(e) => setRps(e.target.value)} />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="p-rpm">{t("profile.rpm")}</Label>
-              <Input id="p-rpm" type="number" min={0} value={rpm} onChange={(e) => setRpm(e.target.value)} />
-            </div>
+          <div className={cn("grid gap-4", claudeCode ? "sm:grid-cols-1" : "sm:grid-cols-3")}>
+            {!claudeCode && (
+              <>
+                <div className="grid gap-2">
+                  <Label htmlFor="p-rps">{t("profile.rps")}</Label>
+                  <Input id="p-rps" type="number" min={0} value={rps} onChange={(e) => setRps(e.target.value)} />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="p-rpm">{t("profile.rpm")}</Label>
+                  <Input id="p-rpm" type="number" min={0} value={rpm} onChange={(e) => setRpm(e.target.value)} />
+                </div>
+              </>
+            )}
             <div className="grid gap-2">
               <Label htmlFor="p-cw">{t("profile.cw")}</Label>
               <Input
@@ -739,7 +776,7 @@ function ProfileSheet({
               />
             </div>
           </div>
-          <p className="-mt-2 text-muted-foreground text-xs">{t("profile.rateHint")}</p>
+          {!claudeCode && <p className="-mt-2 text-muted-foreground text-xs">{t("profile.rateHint")}</p>}
 
           <div className="grid gap-3 rounded-lg border p-3">
             <div className="flex items-center justify-between gap-4">
@@ -764,7 +801,7 @@ function ProfileSheet({
               </div>
               <Switch checked={poolExclude} onCheckedChange={setPoolExclude} aria-label={t("profile.exclude.aria")} />
             </div>
-            {!chatgpt && (
+            {!subscription && (
               <div className="flex items-center justify-between gap-4 border-t pt-3">
                 <div className="grid gap-0.5">
                   <Label className="text-sm">{t("profile.streaming.label")}</Label>
@@ -775,7 +812,7 @@ function ProfileSheet({
             )}
           </div>
 
-          {!chatgpt && (
+          {!subscription && (
             <div className="grid gap-3 rounded-lg border p-3">
               <div className="flex items-center justify-between gap-4">
                 <div className="grid gap-0.5">
@@ -820,7 +857,7 @@ function ProfileSheet({
           )}
 
           <div className="grid gap-3 rounded-lg border p-3">
-            {!chatgpt && (
+            {!subscription && (
               <div className="flex items-center justify-between gap-4">
                 <div className="grid gap-0.5">
                   <Label className="text-sm">{t("profile.thinkingType.label")}</Label>
@@ -840,11 +877,15 @@ function ProfileSheet({
                 </Select>
               </div>
             )}
-            <div className={cn("flex items-center justify-between gap-4", !chatgpt && "border-t pt-3")}>
+            <div className={cn("flex items-center justify-between gap-4", !subscription && "border-t pt-3")}>
               <div className="grid gap-0.5">
                 <Label className="text-sm">{t("profile.effort.label")}</Label>
                 <p className="text-muted-foreground text-xs">
-                  {chatgpt ? t("chatgpt.effortHint") : t("profile.effort.hint")}
+                  {chatgpt
+                    ? t("chatgpt.effortHint")
+                    : claudeCode
+                      ? t("claudeCode.effortHint")
+                      : t("profile.effort.hint")}
                 </p>
               </div>
               <Select value={effort} onValueChange={setEffort}>
@@ -897,10 +938,34 @@ export default function LLMPage() {
     setEditOpen(true);
   }, []);
 
+  // claude-code 프로필이 있을 때만 설치 단위 스위치를 읽는다(null=아직 모름). 꺼져 있으면 카드에 알린다.
+  const [claudeCodeOn, setClaudeCodeOn] = React.useState<boolean | null>(null);
+  const hasClaudeCode = profiles.some((p) => p.auth_mode === "claude-code");
+  React.useEffect(() => {
+    if (!hasClaudeCode) return;
+    let cancelled = false;
+    api
+      .claudeCodeSettings()
+      .then((s) => !cancelled && setClaudeCodeOn(s.effective_enabled))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [hasClaudeCode]);
+
   // 一个配置在卡片上显示的「是否正常」。没填 Key 的配置根本发不出请求，比熔断更该先说。
   const healthOf = React.useCallback(
     (p: LLMProfile, m?: LLMPoolMember): Health => {
-      if (p.auth_mode === "chatgpt") {
+      if (p.auth_mode === "claude-code") {
+        // claude-code 는 Key 가 없고 설치 단위 스위치가 "호출할 수 있는가"를 정한다(로그인은 claude 가 안다).
+        if (claudeCodeOn === false) {
+          return {
+            label: t("health.claudeCodeOff.label"),
+            cls: "border-muted-foreground/40 text-muted-foreground",
+            hint: t("health.claudeCodeOff.hint"),
+          };
+        }
+      } else if (p.auth_mode === "chatgpt") {
         // 구독 프로필은 Key 대신 로그인 상태가 "호출할 수 있는가"를 정한다.
         const c = p.chatgpt;
         if (!c || c.status === "" || c.status === "disconnected") {
@@ -950,7 +1015,7 @@ export default function LLMPage() {
       }
       return { label: t("health.ok"), cls: "border-emerald-500/50 text-emerald-600 dark:text-emerald-400" };
     },
-    [t],
+    [t, claudeCodeOn],
   );
 
   const loadPool = React.useCallback(async () => {
@@ -1068,24 +1133,32 @@ export default function LLMPage() {
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="truncate font-medium text-sm">{p.name}</span>
-                          <Badge variant="outline" className={p.auth_mode === "chatgpt" ? undefined : "uppercase"}>
-                            {p.auth_mode === "chatgpt" ? t("card.chatgptBadge") : p.format}
+                          <Badge variant="outline" className={p.auth_mode ? undefined : "uppercase"}>
+                            {p.auth_mode === "chatgpt"
+                              ? t("card.chatgptBadge")
+                              : p.auth_mode === "claude-code"
+                                ? t("card.claudeCodeBadge")
+                                : p.format}
                           </Badge>
                           <Badge variant="outline" className={cn("ml-auto", h.cls)} title={h.hint}>
                             {h.label}
                           </Badge>
                         </div>
-                        <code className="mt-1 block truncate font-mono text-muted-foreground text-xs">{p.model}</code>
+                        <code className="mt-1 block truncate font-mono text-muted-foreground text-xs">
+                          {p.model || (p.auth_mode === "claude-code" ? t("card.defaultModel") : "")}
+                        </code>
                       </div>
                     </div>
 
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 pl-6 text-muted-foreground text-xs">
                       {p.auth_mode === "chatgpt"
                         ? p.chatgpt?.email && <span className="truncate">{p.chatgpt.email}</span>
-                        : p.api_key_hint && <span>{p.api_key_hint}</span>}
-                      <span>
-                        {p.rate_per_second}/s · {p.rate_per_minute}/min
-                      </span>
+                        : p.auth_mode !== "claude-code" && p.api_key_hint && <span>{p.api_key_hint}</span>}
+                      {p.auth_mode !== "claude-code" && (
+                        <span>
+                          {p.rate_per_second}/s · {p.rate_per_minute}/min
+                        </span>
+                      )}
                       {p.proxy && <span className="truncate">{t("card.proxy", { proxy: p.proxy })}</span>}
                       {p.reasoning_effort && (
                         <span>

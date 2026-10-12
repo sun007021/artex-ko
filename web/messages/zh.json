@@ -3245,7 +3245,9 @@
       "active": "已激活",
       "activate": "设为激活",
       "deleteAria": "删除配置",
-      "chatgptBadge": "ChatGPT"
+      "chatgptBadge": "ChatGPT",
+      "claudeCodeBadge": "Claude Code",
+      "defaultModel": "claude 默认模型"
     },
     "health": {
       "noKey": {
@@ -3267,6 +3269,10 @@
       "chatgptNoPlan": {
         "label": "需要授权",
         "hint": "未授予 ChatGPT 套餐用量权限，请重新登录并允许"
+      },
+      "claudeCodeOff": {
+        "label": "已关闭",
+        "hint": "claude-code 认证方式已关闭，无法调用。请在配置编辑中开启"
       }
     },
     "pool": {
@@ -3416,7 +3422,8 @@
       "authMode": {
         "label": "认证方式",
         "apikey": "API Key",
-        "chatgpt": "ChatGPT 订阅 (Plus/Pro)"
+        "chatgpt": "ChatGPT 订阅 (Plus/Pro)",
+        "claudeCode": "Claude Code（订阅，仅限个人本地使用）"
       }
     },
     "retryLayer": {
@@ -3533,6 +3540,70 @@
         "logoutFailed": "退出登录失败：{msg}",
         "loginFirst": "请先登录 ChatGPT",
         "testFirst": "测试连接前，请先保存配置并登录 ChatGPT"
+      }
+    },
+    "claudeCode": {
+      "title": "Claude Code（订阅，仅限个人本地使用）",
+      "intro": "以无头模式运行您自己登录的官方 claude CLI（Claude Pro/Max 订阅）来生成模型回合。ARTEX 不会读取、保存或转发 Claude 凭据，也不会修改 claude 可执行文件。智能体循环、工具、权限和记录由与 API Key 路径相同的 ARTEX 代码处理。",
+      "modelPlaceholder": "留空 = claude 默认模型 · 例如 sonnet、opus",
+      "modelHint": "会原样作为 --model 传给 claude。可填别名（sonnet、opus 等）或完整模型名。留空则使用 claude 的默认模型。",
+      "effortHint": "作为 --effort 传给 claude（low、medium、high、xhigh、max）。模型不支持的值会在连接测试中报错。默认不发送该值。",
+      "limits": "此方式不使用 API Key、Base URL、输出 token 上限（max_tokens）、非流式、会话头、速率限制（每秒/每分钟）和 thinking 方式，因此已隐藏。输出长度和思考量由 claude 决定。同时生成模型回复的 claude 进程数由上方的并发上限全局限制。",
+      "notice": {
+        "title": "请务必先阅读",
+        "personal": "仅限个人本地使用：只能用您自己的订阅，在您自己的电脑上使用。",
+        "noExpose": "不要把此 ARTEX 实例暴露给他人，也不要共享订阅。请仅绑定到 127.0.0.1 运行（禁止共享账户或订阅）。",
+        "authorized": "只测试您获得授权的目标。禁止用于未经授权的目标。",
+        "noBypass": "不要试图绕过 Claude 的拒绝。模型拒绝时，请接受该结果。",
+        "enforce": "自动化使用是否属于订阅条款的范围由 Anthropic 判断；违反条款时 Anthropic 可能限制或暂停使用。一切责任由您自行承担。",
+        "env": "启动 claude 时，子进程会移除 ANTHROPIC_API_KEY 和 ANTHROPIC_AUTH_TOKEN 环境变量（避免产生 API 计费）。遇到订阅额度上限时会停止而不是重试，也不会在多个账户之间切换。"
+      },
+      "sources": {
+        "legal": "法律与合规",
+        "auth": "认证",
+        "headless": "无头使用",
+        "cli": "CLI 参考",
+        "terms": "消费者条款"
+      },
+      "settings": {
+        "enable": "开启 claude-code",
+        "enableHint": "对整个安装生效的选择加入开关。默认关闭；关闭时无法创建此类配置，调用也会被拒绝。",
+        "ack": "我已阅读以上全部内容。我只会用自己的订阅、在自己的电脑上、针对获得授权的目标使用，并且不会把此 ARTEX 暴露给他人。",
+        "binary": "claude 可执行文件路径",
+        "binaryHint": "留空则使用 PATH 中的 claude。直接执行，不经过 shell。",
+        "concurrent": "并发上限",
+        "concurrentHint": "同时生成模型回复的 claude 进程的全局最大数量（默认 1，最大 {max}）。等待工具执行的进程不计入。",
+        "apply": "应用",
+        "notLoopback": "此 ARTEX 可通过 127.0.0.1 以外的地址访问，因此无法开启。请绑定到 127.0.0.1 运行，使其只能从本机访问。"
+      },
+      "status": {
+        "title": "claude 状态",
+        "check": "重新检查",
+        "checking": "检查中…",
+        "usable": "可用",
+        "version": "版本",
+        "method": "登录方式",
+        "loginHow": "ARTEX 不会替您登录。请自行在终端中运行：",
+        "problem": {
+          "not_installed": "需要安装",
+          "too_old": "需要更新",
+          "not_logged_in": "需要登录",
+          "api_billing": "API 计费路径",
+          "unknown": "无法确认"
+        },
+        "hint": {
+          "not_installed": "未找到 claude 可执行文件。请安装 Claude Code，或在上方指定可执行文件路径。",
+          "too_old": "Claude Code 版本过低。请用 `claude update` 更新。",
+          "not_logged_in": "claude 尚未登录。请自行用您本人的订阅登录。",
+          "api_billing": "claude 正在使用非订阅的认证（如 API Key），会产生 API 计费。只允许订阅登录（claude.ai），请用 `claude auth login` 登录订阅。",
+          "unknown": "无法确认 claude 的状态。请在终端中自行运行 `claude auth status`。"
+        }
+      },
+      "toast": {
+        "nameRequired": "请输入名称",
+        "needAck": "要开启，请勾选已阅读上方声明的确认框",
+        "applied": "已应用 claude-code 设置",
+        "applyFailed": "应用设置失败：{msg}"
       }
     }
   },

@@ -1059,10 +1059,44 @@ export interface LLMProfile {
   session_header_key?: string;
   // 本配置对重试的覆盖（建连/空响应/同 provider 安全窗口）。留空/全 0 = 跟随全局策略。
   retry?: LLMRetryOverride;
-  // 인증 방식: ""(API Key, 기본) | "chatgpt"(ChatGPT 구독, Sign in with ChatGPT).
-  auth_mode?: "" | "chatgpt";
+  // 인증 방식: ""(API Key, 기본) | "chatgpt"(ChatGPT 구독, Sign in with ChatGPT) |
+  // "claude-code"(사용자가 직접 로그인한 공식 claude CLI. 개인 로컬 사용 전용).
+  auth_mode?: "" | "chatgpt" | "claude-code";
   // 구독 프로필의 연결 요약. 토큰은 서버가 절대 내려주지 않는다.
   chatgpt?: ChatGPTSummary;
+}
+
+// ---- claude-code (공식 claude CLI, 사용자가 직접 로그인한 구독) ----
+// 설치 단위 설정. 자격 증명은 어디에도 없다 — 로그인은 claude 바이너리 안에서만 일어난다.
+export interface ClaudeCodeSettings {
+  enabled: boolean; // 개인 로컬 사용 고지를 확인하고 켰는가(기본 false)
+  binary_path: string; // 비면 PATH 의 claude
+  max_concurrent: number; // 동시에 모델 응답을 만드는 claude 프로세스 수 상한
+  effective_enabled: boolean; // 켜져 있고 loopback 조건도 충족
+  max_concurrent_hard: number;
+  min_version: string;
+  loopback_only: boolean; // 서버가 loopback 에서만 듣는가(false 면 켤 수 없다)
+}
+
+export type ClaudeCodeProblem = "" | "not_installed" | "too_old" | "not_logged_in" | "api_billing" | "unknown";
+
+// `claude --version` 과 `claude auth status` 의 결과(토큰 없음).
+export interface ClaudeCodeProbe {
+  binary: string;
+  installed: boolean;
+  version: string;
+  version_ok: boolean;
+  min_version: string;
+  logged_in: boolean;
+  auth_method: string; // claude.ai | oauth_token | api_key | ...
+  usable: boolean;
+  problem: ClaudeCodeProblem;
+  detail?: string;
+}
+
+export interface ClaudeCodeStatus {
+  status: ClaudeCodeProbe;
+  settings: ClaudeCodeSettings;
 }
 
 // ---- ChatGPT 구독 로그인 ----
