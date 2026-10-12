@@ -246,6 +246,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// First-run protection: cache the password hash and, while none is set, issue
 	// the console setup token (or apply ARTEX_ADMIN_PASSWORD) before any request.
 	s.bootstrapAuth()
+	s.cleanClaudeCodeWorkDir()
 	s.applyClaudeCodeSettings()
 	s.initSideQuestions()
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；

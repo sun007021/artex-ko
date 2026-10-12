@@ -75,11 +75,13 @@ func (s *Server) applyClaudeCodeSettings() {
 	claudecode.SetMaxConcurrent(cs.MaxConcurrent)
 	claudecode.SetEnabled(on)
 	claudecode.InvalidateProbe()
-	if on {
-		// 이전 실행이 남긴 임시 작업 디렉터리를 비운다(프로세스는 서버 종료 때 정리된다).
-		if wd := s.claudeCodeWorkDir(); wd != "" {
-			_ = os.RemoveAll(wd)
-		}
+}
+
+// cleanClaudeCodeWorkDir 는 이전 실행이 남긴 임시 작업 디렉터리를 비운다. 서버 시작 때 한 번만 부른다 —
+// 실행 중에는 살아 있는 claude 프로세스가 이 아래의 디렉터리를 쓰므로 설정을 바꿀 때 지우면 안 된다.
+func (s *Server) cleanClaudeCodeWorkDir() {
+	if wd := s.claudeCodeWorkDir(); wd != "" {
+		_ = os.RemoveAll(wd)
 	}
 }
 
