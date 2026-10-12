@@ -93,6 +93,7 @@ type proc struct {
 	events chan sEvent
 	stderr *tailBuffer
 
+	readDone  chan struct{} // stdout 읽기가 끝남(EOF)
 	closed    chan struct{} // 프로세스가 끝났거나 kill 됨
 	closeOnce sync.Once
 	exited    chan struct{} // cmd.Wait 가 반환함
@@ -405,15 +406,22 @@ func (s *session) start(opts Options, sys string, withMCP bool) (*proc, error) {
 	if err != nil {
 		return fail(errf(KindProtocol, "stdin 파이프 실패: %v", err))
 	}
-	stdout, err := cmd.StdoutPipe()
+	// stdout 은 StdoutPipe 대신 직접 만든 파이프를 쓴다: StdoutPipe 는 Wait 가 읽기 끝을 닫아 버려서, 프로세스가
+	// 마지막 줄을 쓰자마자 종료하면 아직 읽지 못한 출력이 사라질 수 있다(Wait 는 읽기가 끝난 뒤에 불러야 한다).
+	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
 		return fail(errf(KindProtocol, "stdout 파이프 실패: %v", err))
 	}
+	cmd.Stdout = stdoutW
 	cmd.Stderr = p.stderr
 	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stdoutW.Close()
 		return fail(errf(KindNotFound, "claude 를 실행할 수 없습니다: %v", err))
 	}
+	_ = stdoutW.Close() // 쓰기 끝은 자식만 갖는다 → 자식이 끝나면 읽기 쪽이 EOF 를 본다
 	p.cmd, p.stdin = cmd, stdin
+	p.readDone = make(chan struct{})
 
 	s.mu.Lock()
 	s.p = p
@@ -425,6 +433,12 @@ func (s *session) start(opts Options, sys string, withMCP bool) (*proc, error) {
 	go func() {
 		werr := cmd.Wait()
 		close(p.exited)
+		// 남은 출력을 다 읽은 뒤에 종료를 알린다(순서 보존). 자식의 자식이 파이프를 쥐고 있어도 무한정 기다리지 않는다.
+		select {
+		case <-p.readDone:
+		case <-time.After(2 * time.Second):
+		}
+		_ = stdout.Close()
 		p.markClosed()
 		select {
 		case p.events <- sEvent{kind: evExit, err: p.exitError(werr)}:
@@ -514,6 +528,7 @@ func (p *proc) push(ev sEvent) {
 }
 
 func (p *proc) readLoop(r io.Reader) {
+	defer close(p.readDone)
 	br := bufio.NewReaderSize(r, 1<<20)
 	rs := &readState{blocks: map[int]*blockState{}}
 	for {

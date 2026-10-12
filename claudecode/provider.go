@@ -171,39 +171,66 @@ func (p *Provider) streamSession(ctx context.Context, req llm.CompletionRequest,
 	s.setTools(req.Tools)
 
 	cfgKey, sysHash := p.cfgKey(), shortHash(sys)
-	proc, reason := s.plan(cfgKey, sysHash, sg)
-	if proc != nil {
-		sent, perr := s.resume(proc, msgs[len(s.syncedLen()):])
-		if perr != nil {
-			return s.failTurn(perr)
+	// 호출자에게 아직 아무것도 넘기지 않았다면 재사용한 프로세스가 턴 사이에 죽은 경우를 투명하게 복구한다
+	// (새 프로세스 + 전사 재생). 한 번만 시도하며, 새로 띄운 프로세스의 크래시는 그대로 오류가 된다.
+	yielded := false
+	yf := func(ev llm.StreamEvent, err error) bool { yielded = true; return yield(ev, err) }
+	forceFresh := false
+	var out turnOut
+	for {
+		var proc *proc
+		reason := "새 세션"
+		if !forceFresh {
+			proc, reason = s.plan(cfgKey, sysHash, sg)
 		}
-		if !sent {
-			reason, proc = "대화가 이어붙일 수 없는 형태로 바뀜", nil
+		reused := proc != nil
+		if reused {
+			sent, perr := s.resume(proc, msgs[len(s.syncedLen()):])
+			switch {
+			case perr != nil && !yielded:
+				s.logf("재사용한 프로세스에 입력을 쓰지 못함 — 재동기화: %v", perr)
+				forceFresh, reused, proc = true, false, nil
+				s.kill()
+				continue
+			case perr != nil:
+				return s.failTurn(perr)
+			case !sent:
+				reason, proc, reused = "대화가 이어붙일 수 없는 형태로 바뀜", nil, false
+			}
 		}
-	}
-	if proc == nil {
-		s.logf("재동기화 session=%s (%s)", key, reason)
-		s.kill()
-		np, serr := s.start(p.opts, sys, true)
-		if serr != nil {
-			return serr
+		if proc == nil {
+			s.logf("재동기화 session=%s (%s)", key, reason)
+			s.kill()
+			np, serr := s.start(p.opts, sys, true)
+			if serr != nil {
+				return serr
+			}
+			proc = np
+			s.mu.Lock()
+			s.cfgKey, s.sysHash = cfgKey, sysHash
+			s.mu.Unlock()
+			if err := proc.send(userInputLine(renderTranscript(reminder, msgs))); err != nil {
+				return s.failTurn(err)
+			}
 		}
-		proc = np
 		s.mu.Lock()
-		s.cfgKey, s.sysHash = cfgKey, sysHash
+		s.state = stBusy
+		s.synced = sg
+		s.lastActive = time.Now()
 		s.mu.Unlock()
-		if err := proc.send(userInputLine(renderTranscript(reminder, msgs))); err != nil {
-			return s.failTurn(err)
-		}
-	}
-	s.mu.Lock()
-	s.state = stBusy
-	s.synced = sg
-	s.lastActive = time.Now()
-	s.mu.Unlock()
 
-	out, err := s.consume(ctx, proc, yield)
-	if err != nil {
+		var err error
+		out, err = s.consume(ctx, proc, yf)
+		if err == nil {
+			break
+		}
+		var ce *Error
+		if reused && !yielded && !forceFresh && ctx.Err() == nil && errors.As(err, &ce) && ce.Kind == KindCrash {
+			s.logf("재사용한 프로세스가 응답 전에 종료됨 — 재동기화 (%v)", err)
+			forceFresh = true
+			s.kill()
+			continue
+		}
 		return s.failTurn(m.noteResult(err))
 	}
 	m.gate.success()

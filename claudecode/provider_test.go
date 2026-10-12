@@ -1031,3 +1031,22 @@ func waitFor(t *testing.T, d time.Duration, what string, cond func() bool) {
 	}
 	t.Fatalf("시간 초과: %s", what)
 }
+
+func TestOutputNotLostWhenProcessExitsRightAfterResult(t *testing.T) {
+	// Wait 가 stdout 읽기를 끊어 마지막 줄들이 사라지던 경합의 회귀 테스트.
+	for i := 0; i < 20; i++ {
+		h := newHarness(t)
+		h.script(0, fakeMsg{Blocks: []fakeBlock{textBlock("complete answer")}, Stop: "end_turn", ExitAfter: true})
+		h.script(1, fakeMsg{Blocks: []fakeBlock{textBlock("second")}, Stop: "end_turn"})
+		h.user("go")
+		r := h.run()
+		if r.err != nil || r.msg.Text() != "complete answer" || r.stop != "end_turn" {
+			t.Fatalf("iter %d: err=%v text=%q stop=%q", i, r.err, r.msg.Text(), r.stop)
+		}
+		// 죽은 프로세스는 다음 호출에서 재동기화로 이어진다.
+		h.user("again")
+		if r := h.run(); r.err != nil || r.msg.Text() != "second" {
+			t.Fatalf("iter %d 후속: err=%v text=%q", i, r.err, r.msg.Text())
+		}
+	}
+}

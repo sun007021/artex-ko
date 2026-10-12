@@ -44,6 +44,8 @@ type fakeMsg struct {
 	ErrCat   string      `json:"err_cat,omitempty"`  // assistant.error 범주
 	ErrText  string      `json:"err_text,omitempty"`
 	Crash    bool        `json:"crash,omitempty"`
+	// ExitAfter 는 턴의 마지막 줄(result)을 쓰자마자 프로세스를 끝낸다 — 출력 끝부분 유실 경합을 재현한다.
+	ExitAfter bool `json:"exit_after,omitempty"`
 }
 
 func fakeEmit(v any) {
@@ -266,6 +268,9 @@ func fakeRunMessage(dir string, idx int, mcpURL string, m fakeMsg, n int) bool {
 
 	if m.Stop != "tool_use" {
 		fakeEmit(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": "ok", "total_cost_usd": 0.0})
+		if m.ExitAfter {
+			os.Exit(0)
+		}
 		return true
 	}
 	// 도구 호출: 보류 중인 tools/call 이 ARTEX 의 결과를 받을 때까지 막힌다.
