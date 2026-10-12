@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/Autumn-27/artex/claudecode"
 	"io"
 	"log"
 	"net/http"
@@ -85,6 +86,10 @@ type Config struct {
 	// TokenSource 는 AuthMode=chatgpt 일 때 필수다. Config 는 == 로 비교되므로(server 가
 	// 캐시된 구성과 비교한다) 포인터 구현이어야 한다.
 	TokenSource TokenSource
+	// ClaudeBinary/ClaudeWorkDir 는 AuthMode=claude-code 일 때만 쓴다(claudecode.go). 둘 다
+	// 문자열이라 Config 는 계속 == 로 비교된다. 비어 있으면 PATH 의 "claude" / 임시 디렉터리.
+	ClaudeBinary  string
+	ClaudeWorkDir string
 }
 
 // RetryConfig 是随一个 LLM 配置走的重试参数。每层的「次数」统一语义:
@@ -262,6 +267,10 @@ func (c Config) Provider() string {
 // limiter lives on the single provider instance — so planner + all workers +
 // main agent (which share this provider) are bounded by one shared rate limit.
 func (c Config) NewProvider() (llm.Provider, error) {
+	if c.UsesClaudeCode() {
+		// 구독으로 로그인된 claude CLI 가 모델 턴을 만든다(HTTP 클라이언트·API Key 없음).
+		return c.newClaudeCodeProvider(), nil
+	}
 	var client *http.Client
 	var err error
 	baseURL, apiKey, format := c.BaseURL, c.APIKey, c.Format
@@ -317,6 +326,11 @@ func IsQuotaExhaustedMessage(message string) bool {
 	// ChatGPT 설정 > Usage 에서 풀기 전까지 계속되는 한도이므로 장애 전환 대상이다.
 	// (subscription_sharing_usage_unavailable 은 일시적 장애라 여기에 넣지 않는다.)
 	if strings.Contains(message, "subscription_sharing_usage_limit_exceeded") {
+		return true
+	}
+	// Claude 구독(claude-code): 5시간/주간 사용량 한도 소진. claudecode 가 오류 앞에 이 고정 마커를
+	// 붙인다. 시간이 지나야 풀리는 한도이므로 장애 전환 대상이다.
+	if strings.Contains(message, claudecode.UsageLimitMarker) {
 		return true
 	}
 	// Authentication/authorization and provider-side 5xx failures never rotate,
@@ -525,7 +539,11 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	if err != nil {
 		return 0, "", err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	timeout := 30 * time.Second
+	if c.UsesClaudeCode() {
+		timeout = 90 * time.Second // claude 프로세스 기동 + 첫 응답까지 API 호출보다 오래 걸린다
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	// 抓取原始 wire 报文:连接测试最需要看到的就是网关到底回了什么(状态码+响应体),
 	// 而 norma 把响应解码成 StreamEvent 后这些就没了。quotaAwareTransport 会在
@@ -537,7 +555,11 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	// x-opencode-session 头,缺了直接 400 MissingSessionID),这会导致"对话正常、
 	// 点击测试却 400"的落差。这里补挂一个一次性随机 session id,让测试与真实对话走同
 	// 一套发头逻辑;未配 SessionHeaderKey 的端点不读它,无副作用。
-	ctx = transcript.WithSessionID(ctx, "conntest-"+transcript.NewSessionID())
+	sid := "conntest-" + transcript.NewSessionID()
+	ctx = transcript.WithSessionID(ctx, sid)
+	if c.UsesClaudeCode() {
+		defer claudecode.CloseSession(sid) // 테스트가 끝나면 이 세션의 claude 프로세스를 바로 정리한다
+	}
 	start := time.Now()
 	// MaxTokens 要给足：推理模型(如 deepseek-v4-pro)在给出答案前会先产出一大段
 	// 思考(实测对一句 "ping" 也能烧 ~2900 token)。若只给 32,模型会一直卡在"思考阶段"

@@ -221,3 +221,20 @@ func TestRateBackoffDoublesAndCaps(t *testing.T) {
 		t.Fatalf("성공 뒤 초기화 안 됨: %v", last)
 	}
 }
+
+func TestErrorStringMarkers(t *testing.T) {
+	for kind, want := range map[ErrKind]string{
+		KindUsageLimit: UsageLimitMarker, KindAuth: "status 401", KindNotFound: SetupErrorMarker,
+		KindTooOld: SetupErrorMarker, KindRefused: SetupErrorMarker,
+	} {
+		if s := (&Error{Kind: kind, Message: "m"}).Error(); !strings.Contains(s, want) {
+			t.Errorf("kind %d: %q 에 %q 없음", kind, s, want)
+		}
+	}
+	for _, kind := range []ErrKind{KindRateLimit, KindCrash, KindProtocol, KindUnknown} {
+		s := (&Error{Kind: kind, Message: "m"}).Error()
+		if strings.Contains(s, SetupErrorMarker) || strings.Contains(s, UsageLimitMarker) || strings.Contains(s, "status 401") {
+			t.Errorf("재시도 가능한 오류에 고정 표지가 붙음: %q", s)
+		}
+	}
+}

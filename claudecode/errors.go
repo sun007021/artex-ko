@@ -19,6 +19,10 @@ import (
 // UsageLimitMarker 는 구독 사용량 한도 오류를 표시하는 고정 토큰이다.
 const UsageLimitMarker = "claude_code_usage_limit"
 
+// SetupErrorMarker 는 설치·버전·정책 거부처럼 같은 요청을 되풀이해도 소용없는 오류에 붙는 고정 접두다.
+// server 의 재시도 판정이 이 문자열을 보고 같은 provider 재시도를 건너뛴다.
+const SetupErrorMarker = "claude_code_setup"
+
 // ErrKind 는 오류의 성격이다.
 type ErrKind int
 
@@ -48,6 +52,8 @@ func (e *Error) Error() string {
 		return UsageLimitMarker + ": " + e.Message
 	case KindAuth:
 		return "claude-code status 401: " + e.Message
+	case KindNotFound, KindTooOld, KindRefused:
+		return SetupErrorMarker + ": " + e.Message
 	}
 	return "claude-code: " + e.Message
 }

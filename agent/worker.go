@@ -496,6 +496,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)
+	// claude-code: 끝난 워커의 claude 프로세스를 바로 정리한다(채팅/메인/플래너는 턴마다 새 세션이지만
+	// 같은 대화가 이어지므로 유휴 만료에 맡긴다).
+	defer releaseClaudeSession(opts.SessionID)
 
 	// Resume prior conversation if this intent was paused/blocked/exhausted and is
 	// being re-run. The transcript ID is deterministic per intent, so if a prior
