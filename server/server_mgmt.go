@@ -1899,6 +1899,12 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	// 헤더·비스트리밍은 이 경로에서 쓰지 않으므로 비운다(max_output_tokens 는 지원되지 않는
 	// 요청 필드이고 스트리밍은 항상 켜진다). 모델·추론 강도·컨텍스트 창·속도 제한은 그대로 쓴다.
 	if p.AuthMode == db.AuthModeChatGPT {
+		// 모델 식별자는 코드에 두지 않는다 — 계정의 모델 목록에서 고른 값이 반드시 있어야 한다.
+		if strings.TrimSpace(p.Model) == "" {
+			writeErr(w, 400, errChatGPTModelRequired)
+			return
+		}
+		p.Model = strings.TrimSpace(p.Model)
 		p.Format, p.BaseURL, p.APIKey = "openai-responses", "", ""
 		p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, p.Streaming = 0, "", "", true
 	}
@@ -1989,9 +1995,18 @@ func (s *Server) pgDeleteProfile(w http.ResponseWriter, r *http.Request) {
 	// 삭제되면 OAuth 행도 CASCADE 로 사라지므로, 원격 폐기에 쓸 토큰을 미리 읽어 둔다.
 	var delProf *db.LLMProfile
 	var delRec *siwc.Record
-	if dp, _ := pg.ProfileByID(id); dp != nil && dp.AuthMode == db.AuthModeChatGPT {
+	dp, err := pg.ProfileByID(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if dp != nil && dp.AuthMode == db.AuthModeChatGPT {
 		delProf = dp
-		delRec, _ = s.chatgptSession(dp).Snapshot(r.Context())
+		// 토큰을 읽지 못하면 원격 폐기를 할 수 없다. 살아 있는 grant 를 남긴 채 지우지 않도록 삭제를 중단한다.
+		if delRec, err = s.chatgptSession(dp).Snapshot(r.Context()); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 	}
 	if err := pg.DeleteProfileContext(r.Context(), id); err != nil {
 		switch {
@@ -2009,7 +2024,8 @@ func (s *Server) pgDeleteProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if delProf != nil {
-		s.cgpt.forget(id)
+		s.cgpt.sessions.forget(id)
+		s.cgpt.logins.forget(id)
 		go s.revokeChatGPTTokens(delProf, delRec)
 	}
 	s.invalidateProfileAgents() // drop cached agents for the removed profile

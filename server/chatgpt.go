@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
@@ -43,44 +42,22 @@ import (
 // 돌아오고, 그렇지 않으면 사용자가 마지막 주소창 URL 을 붙여 넣는다.
 
 const (
-	chatgptPendingTTL  = 10 * time.Minute
-	chatgptMaxPending  = 32
 	chatgptDefaultPort = 8787
 	chatgptStepTimeout = 45 * time.Second
+	// chatgptCleanupTimeout 은 로그아웃·프로필 정리 때의 원격 폐기와 삭제를 합친 상한이다.
+	chatgptCleanupTimeout = 20 * time.Second
 	// siwc 에 알리는 앱 이름. 모든 설치에서 같아야 한다(표시용 메타데이터일 뿐 신원이 아니다).
 	chatgptAppName = "ARTEX"
 )
 
-type chatgptLogin struct {
-	profileID int64
-	p         *siwc.Pending
-	expires   time.Time
-	// authURL 은 id_token_hint 를 담은 재인가 URL 일 때만 채운다. 이 값은 UI 로 보내지 않고
-	// GET /auth/start 가 브라우저를 302 로 보낼 때만 쓴다(ID 토큰이 화면 스크립트에 노출되지 않게).
-	authURL string
-}
-
-type chatgptLoginResult struct {
-	State string // "done" | "error"
-	Code  string
-	At    time.Time
-}
-
-type chatgptSessionEntry struct {
-	proxy string
-	sess  *siwc.Session
-}
-
-// chatgptRuntime 은 Server 안의 구독 로그인 상태다(제로 값으로 쓸 수 있다).
+// chatgptRuntime 은 Server 안의 구독 로그인 상태다(제로 값으로 쓸 수 있다). 세션 레지스트리와
+// 로그인 상태 기계는 각자의 파일(chatgpt_sessions.go, chatgpt_logins.go)에 있다.
 type chatgptRuntime struct {
-	mu       sync.Mutex
-	clients  map[string]*siwc.Client // proxy → client (discovery/JWKS 캐시 공유)
-	sessions map[int64]*chatgptSessionEntry
-	pending  map[string]*chatgptLogin // state → 진행 중 로그인
-	results  map[int64]chatgptLoginResult
+	sessions chatgptSessions
+	logins   chatgptLogins
 
-	// 테스트 훅
-	issuer      string
+	// fetchModels 는 모델 목록 조회의 주입 지점이다(비어 있으면 agent.FetchChatGPTModels).
+	// 발급자 주입은 sessions.issuer.
 	fetchModels func(ctx context.Context, proxy string, src agent.TokenSource) ([]agent.ChatGPTModel, error)
 }
 
@@ -96,85 +73,9 @@ func (s *Server) SetListenAddr(addr string) {
 	}
 }
 
-// ---- 저장소 어댑터 ----
-
-// profileOAuthStore 는 siwc.Store 를 llm_profile_oauth 행에 연결한다.
-type profileOAuthStore struct {
-	pg *db.DB
-	id int64
-}
-
-func (st profileOAuthStore) Load(ctx context.Context) (*siwc.Record, error) {
-	o, err := st.pg.GetProfileOAuth(ctx, st.id)
-	if err != nil || o == nil {
-		return nil, err
-	}
-	return &siwc.Record{
-		ClientID: o.ClientID, Subject: o.Subject, Email: o.Email, IDToken: o.IDToken,
-		AccessToken: o.AccessToken, RefreshToken: o.RefreshToken, ExpiresAt: o.ExpiresAt,
-		EarliestRefreshAt: o.EarliestRefreshAt, Scopes: strings.Fields(o.Scopes),
-		PendingIDToken: o.PendingIDToken, PendingReceivedAt: o.PendingReceivedAt,
-		Status: o.Status, LastError: o.LastError,
-	}, nil
-}
-
-func (st profileOAuthStore) Save(ctx context.Context, r *siwc.Record) error {
-	return st.pg.SaveProfileOAuth(ctx, &db.ProfileOAuth{
-		ProfileID: st.id, ClientID: r.ClientID, Subject: r.Subject, Email: r.Email, IDToken: r.IDToken,
-		AccessToken: r.AccessToken, RefreshToken: r.RefreshToken, ExpiresAt: r.ExpiresAt,
-		EarliestRefreshAt: r.EarliestRefreshAt, Scopes: strings.Join(r.Scopes, " "),
-		PendingIDToken: r.PendingIDToken, PendingReceivedAt: r.PendingReceivedAt,
-		Status: r.Status, LastError: r.LastError,
-	})
-}
-
-// ---- 세션/클라이언트 ----
-
-func (rt *chatgptRuntime) clientLocked(proxy string, logf func(string, ...any)) *siwc.Client {
-	if c := rt.clients[proxy]; c != nil {
-		return c
-	}
-	hc, err := agent.ProxyHTTPClient(proxy, 30*time.Second)
-	if err != nil {
-		log.Printf("[chatgpt] 프록시 설정을 쓸 수 없어 직접 연결로 인증 서버에 접속합니다: %v", err)
-		hc = nil
-	}
-	c := siwc.New(siwc.Config{AppName: chatgptAppName, Issuer: rt.issuer, HTTPClient: hc, Logf: logf})
-	if rt.clients == nil {
-		rt.clients = map[string]*siwc.Client{}
-	}
-	rt.clients[proxy] = c
-	return c
-}
-
-// chatgptSession 은 프로필의 토큰 세션을 돌려준다. 같은 프로필·프록시면 항상 같은 포인터라서
-// agent.Config 의 == 비교(캐시된 구성 판별)가 유지된다.
+// chatgptSession 은 프로필의 토큰 세션을 돌려준다(프로필 id 당 하나, chatgptSessions 참고).
 func (s *Server) chatgptSession(p *db.LLMProfile) *siwc.Session {
-	rt := &s.cgpt
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if e := rt.sessions[p.ID]; e != nil && e.proxy == p.Proxy {
-		return e.sess
-	}
-	client := rt.clientLocked(p.Proxy, log.Printf)
-	sess := client.NewSession(profileOAuthStore{pg: s.m.pg, id: p.ID})
-	if rt.sessions == nil {
-		rt.sessions = map[int64]*chatgptSessionEntry{}
-	}
-	rt.sessions[p.ID] = &chatgptSessionEntry{proxy: p.Proxy, sess: sess}
-	return sess
-}
-
-func (rt *chatgptRuntime) forget(profileID int64) {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	delete(rt.sessions, profileID)
-	delete(rt.results, profileID)
-	for st, pl := range rt.pending {
-		if pl.profileID == profileID {
-			delete(rt.pending, st)
-		}
-	}
+	return s.cgpt.sessions.session(s.m.pg, p)
 }
 
 // chatgptReady 는 세션이 지금 추론에 쓸 수 있는 상태(로그인됨 + 플랜 사용 권한 허가)인지 본다.
@@ -243,6 +144,8 @@ const (
 	errChatGPTNoPending       = "진행 중인 ChatGPT 로그인이 없습니다. 로그인을 다시 시작해 주세요"
 	errChatGPTBadCallback     = "붙여 넣은 주소에서 로그인 정보를 읽을 수 없습니다"
 	errChatGPTTooManyLogins   = "진행 중인 로그인이 너무 많습니다. 잠시 후 다시 시도해 주세요"
+	errChatGPTInvalidClient   = "ChatGPT 가 이 앱 등록을 더는 받아들이지 않습니다. 다시 로그인해 앱을 새로 등록해 주세요"
+	errChatGPTModelRequired   = "ChatGPT 구독 방식에는 모델을 선택해야 합니다"
 )
 
 func chatgptErrCodeMessage(err error) (code, msg string) {
@@ -262,6 +165,8 @@ func chatgptErrCodeMessage(err error) (code, msg string) {
 		return code, errChatGPTIdentityDown
 	case siwc.CodeAccountMismatch:
 		return code, errChatGPTAccountMismatch
+	case siwc.CodeInvalidClient:
+		return code, errChatGPTInvalidClient
 	case siwc.CodeReauthRequired, siwc.CodeNotConnected:
 		return code, errChatGPTLoginRequired
 	case siwc.CodePlanUsageDisabled:
@@ -368,45 +273,28 @@ func (s *Server) chatgptLoginStart(w http.ResponseWriter, r *http.Request) {
 	}
 	redirectURI := siwc.RedirectURIForPort(s.chatgptRedirectPort(r, req.RedirectPort))
 	opts := siwc.BeginOptions{RedirectURI: redirectURI, HostID: hostID, Reconsent: req.Reconsent}
-	if rec != nil && rec.ClientID != "" {
+	if rec != nil && rec.ClientID != "" && rec.LastError != siwc.CodeInvalidClient {
+		// (발급자가 이 등록을 거부한 상태면 — invalid_client — 저장된 client_id 를 다시 쓰지 않고 새로 등록한다.)
 		// 재인가: 저장된 클라이언트와 보관한 ID 토큰/이메일 힌트를 쓴다(계정 선택 화면 생략).
 		opts.ClientID, opts.IDTokenHint, opts.LoginHint = rec.ClientID, rec.IDToken, rec.Email
 	}
-	rt := &s.cgpt
-	rt.mu.Lock()
-	client := rt.clientLocked(p.Proxy, log.Printf)
-	rt.mu.Unlock()
+	client := s.cgpt.sessions.client(p.Proxy)
 	authURL, pending, err := client.BeginLogin(opts)
 	if err != nil {
 		writeChatGPTErr(w, 400, err)
 		return
 	}
-	rt.mu.Lock()
-	now := time.Now()
-	if rt.pending == nil {
-		rt.pending = map[string]*chatgptLogin{}
+	// 재인가 URL 에는 보관한 ID 토큰(id_token_hint)이 들어간다. UI 응답에는 싣지 않고, 같은 서버의
+	// /auth/start 가 브라우저를 그 주소로 (한 번만) 보내게 한다.
+	openURL, hintURL := authURL, ""
+	if opts.IDTokenHint != "" {
+		hintURL = authURL
+		openURL = "/auth/start?state=" + url.QueryEscape(pending.State)
 	}
-	for st, pl := range rt.pending { // 만료분과 같은 프로필의 이전 시도를 정리
-		if now.After(pl.expires) || pl.profileID == p.ID {
-			delete(rt.pending, st)
-		}
-	}
-	if len(rt.pending) >= chatgptMaxPending {
-		rt.mu.Unlock()
+	if _, ok := s.cgpt.logins.begin(p.ID, pending, hintURL); !ok {
 		writeErr(w, 429, errChatGPTTooManyLogins)
 		return
 	}
-	login := &chatgptLogin{profileID: p.ID, p: pending, expires: now.Add(chatgptPendingTTL)}
-	openURL := authURL
-	if opts.IDTokenHint != "" {
-		// 재인가 URL 에는 보관한 ID 토큰(id_token_hint)이 들어간다. UI 응답에는 싣지 않고,
-		// 같은 서버의 /auth/start 가 브라우저를 그 주소로 보내게 한다.
-		login.authURL = authURL
-		openURL = "/auth/start?state=" + url.QueryEscape(pending.State)
-	}
-	rt.pending[pending.State] = login
-	delete(rt.results, p.ID)
-	rt.mu.Unlock()
 	// 인가 URL 은 id_token_hint 를 담을 수 있으므로 로그에 남기지 않는다.
 	log.Printf("[chatgpt] 로그인 시작 profile=%d redirect=%s reauth=%v", p.ID, redirectURI, opts.ClientID != "")
 	writeJSON(w, 200, map[string]any{
@@ -416,82 +304,39 @@ func (s *Server) chatgptLoginStart(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// findLogin 은 state 로 진행 중 로그인을 찾는다(만료분은 정리). consume=true 면 제거한다.
-func (rt *chatgptRuntime) findLogin(state string, consume bool) *chatgptLogin {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	pl := rt.pending[state]
-	if pl == nil {
-		return nil
-	}
-	if time.Now().After(pl.expires) {
-		delete(rt.pending, state)
-		return nil
-	}
-	if consume {
-		delete(rt.pending, state)
-	}
-	return pl
-}
-
-func (rt *chatgptRuntime) loginForProfile(profileID int64) *chatgptLogin {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	var best *chatgptLogin
-	for st, pl := range rt.pending {
-		if time.Now().After(pl.expires) {
-			delete(rt.pending, st)
-			continue
-		}
-		if pl.profileID == profileID && (best == nil || pl.expires.After(best.expires)) {
-			best = pl
-		}
-	}
-	return best
-}
-
-func (rt *chatgptRuntime) setResult(profileID int64, res chatgptLoginResult) {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if rt.results == nil {
-		rt.results = map[int64]chatgptLoginResult{}
-	}
-	rt.results[profileID] = res
-}
-
 // finishChatGPTLogin 은 콜백 값(raw)을 검증하고 코드를 교환해 자격 증명을 저장한다.
 // state 불일치는 대기 중인 로그인을 소모하지 않는다(엉뚱한 요청이 진행 중인 로그인을 죽이지 못하게).
 // 그 밖에는 인가 코드가 일회용이라 성공이든 실패든 시도가 끝난다.
 func (s *Server) finishChatGPTLogin(ctx context.Context, pl *chatgptLogin, raw string) error {
-	rt := &s.cgpt
+	logins := &s.cgpt.logins
 	p, err := s.m.pg.ProfileByID(pl.profileID)
 	if err != nil {
 		return err
 	}
 	if p == nil || p.AuthMode != db.AuthModeChatGPT {
-		rt.findLogin(pl.p.State, true)
+		logins.find(pl.p.State, true)
 		return errors.New("profile is not a chatgpt profile")
 	}
-	rt.mu.Lock()
-	client := rt.clientLocked(p.Proxy, log.Printf)
-	rt.mu.Unlock()
+	client := s.cgpt.sessions.client(p.Proxy)
 
 	cb, err := client.ParseCallback(pl.p, raw)
 	if err != nil {
 		if siwc.CodeOf(err) != siwc.CodeInvalidState {
-			rt.findLogin(pl.p.State, true)
-			rt.setResult(pl.profileID, chatgptLoginResult{State: "error", Code: siwc.CodeOf(err), At: time.Now()})
+			logins.find(pl.p.State, true)
+			logins.setResult(pl.profileID, chatgptLoginResult{State: "error", Code: siwc.CodeOf(err), At: time.Now()})
 		}
 		return err
 	}
-	if rt.findLogin(pl.p.State, true) == nil { // 동시에 다른 경로(콜백/붙여넣기)가 먼저 가져갔다
+	if logins.find(pl.p.State, true) == nil { // 동시에 다른 경로(콜백/붙여넣기)가 먼저 가져갔다
 		return siwc.ErrNotConnected
 	}
 	fail := func(err error) error {
-		rt.setResult(pl.profileID, chatgptLoginResult{State: "error", Code: siwc.CodeOf(err), At: time.Now()})
+		logins.setResult(pl.profileID, chatgptLoginResult{State: "error", Code: siwc.CodeOf(err), At: time.Now()})
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, chatgptStepTimeout)
+	// 인가 코드는 일회용이고 교환이 끝나면 refresh token 이 발급된다. 브라우저 탭이 닫혀 요청 ctx 가
+	// 취소돼도 교환·저장은 끝까지 가야 한다(자체 타임아웃만 건다).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), chatgptStepTimeout)
 	defer cancel()
 	sess := s.chatgptSession(p)
 	prev, err := sess.Snapshot(ctx)
@@ -515,7 +360,7 @@ func (s *Server) finishChatGPTLogin(ctx context.Context, pl *chatgptLogin, raw s
 	if err := sess.Replace(ctx, rec); err != nil {
 		return fail(err)
 	}
-	rt.setResult(pl.profileID, chatgptLoginResult{State: "done", At: time.Now()})
+	logins.setResult(pl.profileID, chatgptLoginResult{State: "done", At: time.Now()})
 	log.Printf("[chatgpt] 로그인 완료 profile=%d plan_usage=%v", p.ID, rec.HasPlanUsage())
 	s.afterChatGPTChange()
 	return nil
@@ -547,21 +392,23 @@ const (
 	msgChatGPTCallbackBadReq    = "유효하지 않은 로그인 요청입니다. ARTEX 설정 화면에서 로그인을 다시 시작해 주세요."
 )
 
-// chatgptStart 는 재인가 URL(id_token_hint 포함)로 브라우저를 보낸다(/auth/start, 무인증).
-// 로그인 시작 때 만든 256비트 state 를 아는 쪽(= 시작을 요청한 관리자 화면)만 쓸 수 있다.
+// chatgptStart 는 재인가 URL(id_token_hint 포함)로 브라우저를 한 번만 보낸다(/auth/start, 무인증).
+// 로그인 시작 때 만든 256비트 state 를 아는 쪽(= 시작을 요청한 관리자 화면)만 쓸 수 있고, URL 은
+// 첫 요청이 가져가면 사라지므로 주소창·히스토리·로그에 남은 state URL 을 다시 열어도 재인가 URL 이
+// 나오지 않는다.
 func (s *Server) chatgptStart(w http.ResponseWriter, r *http.Request) {
-	var pl *chatgptLogin
+	target := ""
 	if states := r.URL.Query()["state"]; len(states) == 1 && s.m != nil && s.m.pg != nil {
-		pl = s.cgpt.findLogin(states[0], false)
+		target = s.cgpt.logins.takeStartURL(states[0])
 	}
 	h := w.Header()
 	h.Set("Cache-Control", "no-store")
 	h.Set("Referrer-Policy", "no-referrer")
-	if pl == nil || pl.authURL == "" {
+	if target == "" {
 		chatgptCallbackPage(w, http.StatusBadRequest, trMsg(msgChatGPTCallbackFailTitle), trMsg(msgChatGPTCallbackBadReq))
 		return
 	}
-	h.Set("Location", pl.authURL)
+	h.Set("Location", target)
 	w.WriteHeader(http.StatusFound) // 본문 없이: 리디렉션 안내문에 URL 이 다시 찍히지 않게
 }
 
@@ -570,7 +417,7 @@ func (s *Server) chatgptCallback(w http.ResponseWriter, r *http.Request) {
 	states := r.URL.Query()["state"]
 	var pl *chatgptLogin
 	if len(states) == 1 && s.m != nil && s.m.pg != nil {
-		pl = s.cgpt.findLogin(states[0], false)
+		pl = s.cgpt.logins.find(states[0], false)
 	}
 	if pl == nil {
 		// 모르는 state 는 아무 것도 소모하지 않는다.
@@ -602,7 +449,7 @@ func (s *Server) chatgptLoginComplete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errChatGPTBadCallback)
 		return
 	}
-	pl := s.cgpt.loginForProfile(p.ID)
+	pl := s.cgpt.logins.forProfile(p.ID)
 	if pl == nil {
 		writeErr(w, 409, errChatGPTNoPending)
 		return
@@ -635,24 +482,23 @@ func (s *Server) chatgptStatusBody(ctx context.Context, p *db.LLMProfile) map[st
 		}
 		if rec.LastError != "" {
 			st["last_error"] = rec.LastError
+			// 갱신이 끝내 불가능한 상태(재로그인 필요, 등록 거부)는 화면에 이유까지 보여 준다.
+			if status == siwc.StatusReauth {
+				_, msg := chatgptErrCodeMessage(&siwc.Error{Code: rec.LastError})
+				st["last_error_message"] = trChatGPTMsg(msg)
+			}
 		}
 	}
 	login := map[string]any{"state": "none"}
-	rt := &s.cgpt
-	if pl := rt.loginForProfile(p.ID); pl != nil {
+	logins := &s.cgpt.logins
+	if pl := logins.forProfile(p.ID); pl != nil {
 		login = map[string]any{"state": "pending", "redirect_uri": pl.p.RedirectURI,
 			"expires_in": int(time.Until(pl.expires).Seconds())}
-	} else {
-		rt.mu.Lock()
-		res, ok := rt.results[p.ID]
-		rt.mu.Unlock()
-		if ok && time.Since(res.At) < 30*time.Minute {
-			login = map[string]any{"state": res.State}
-			if res.State == "error" {
-				fake := &siwc.Error{Code: res.Code}
-				_, msg := chatgptErrCodeMessage(fake)
-				login["error"], login["code"] = trChatGPTMsg(msg), res.Code
-			}
+	} else if res, ok := logins.result(p.ID); ok {
+		login = map[string]any{"state": res.State}
+		if res.State == "error" {
+			_, msg := chatgptErrCodeMessage(&siwc.Error{Code: res.Code})
+			login["error"], login["code"] = trChatGPTMsg(msg), res.Code
 		}
 	}
 	st["login"] = login
@@ -693,22 +539,11 @@ func (s *Server) chatgptLogout(w http.ResponseWriter, r *http.Request) {
 		writeChatGPTErr(w, 500, err)
 		return
 	}
-	s.cgpt.forgetLogin(p.ID)
+	s.cgpt.logins.forget(p.ID)
 	log.Printf("[chatgpt] 로그아웃 profile=%d 원격 폐기 확인=%v", p.ID, revoked)
 	s.afterChatGPTChange()
 	// revoked=false: 로컬 토큰은 지웠지만 원격 폐기를 확인하지 못했다 — ChatGPT 설정에서 앱 연결을 끊을 수 있다.
 	writeJSON(w, 200, map[string]any{"ok": true, "revoked": revoked})
-}
-
-func (rt *chatgptRuntime) forgetLogin(profileID int64) {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	delete(rt.results, profileID)
-	for st, pl := range rt.pending {
-		if pl.profileID == profileID {
-			delete(rt.pending, st)
-		}
-	}
 }
 
 func (s *Server) chatgptModels(w http.ResponseWriter, r *http.Request) {
@@ -739,11 +574,8 @@ func (s *Server) revokeChatGPTTokens(p *db.LLMProfile, rec *siwc.Record) {
 	if rec == nil || rec.RefreshToken == "" {
 		return
 	}
-	rt := &s.cgpt
-	rt.mu.Lock()
-	client := rt.clientLocked(p.Proxy, log.Printf)
-	rt.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	client := s.cgpt.sessions.client(p.Proxy)
+	ctx, cancel := context.WithTimeout(context.Background(), chatgptCleanupTimeout)
 	defer cancel()
 	if err := client.Revoke(ctx, rec.ClientID, rec.RefreshToken); err != nil {
 		log.Printf("[chatgpt] 프로필 삭제 뒤 원격 폐기를 확인하지 못했습니다 profile=%d: %s", p.ID, siwc.CodeOf(err))
@@ -752,8 +584,10 @@ func (s *Server) revokeChatGPTTokens(p *db.LLMProfile, rec *siwc.Record) {
 
 // dropChatGPTCredentials 는 구독 프로필이 API Key 방식으로 바뀔 때 남은 OAuth 자격 증명을
 // 원격 폐기하고 지운다(client_id 포함 — 더는 이 프로필의 것이 아니다).
+//
+// 호출한 요청이 취소돼도 폐기·삭제는 끝까지 간다(refresh token 이 발급자 쪽에 살아 남지 않게).
 func (s *Server) dropChatGPTCredentials(ctx context.Context, p *db.LLMProfile) {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), chatgptCleanupTimeout)
 	defer cancel()
 	if _, err := s.chatgptSession(p).Logout(ctx); err != nil {
 		log.Printf("[chatgpt] 인증 방식 변경 중 로그아웃 실패 profile=%d: %s", p.ID, siwc.CodeOf(err))
@@ -761,7 +595,8 @@ func (s *Server) dropChatGPTCredentials(ctx context.Context, p *db.LLMProfile) {
 	if err := s.m.pg.DeleteProfileOAuth(ctx, p.ID); err != nil {
 		log.Printf("[chatgpt] OAuth 자격 증명 삭제 실패 profile=%d: %v", p.ID, err)
 	}
-	s.cgpt.forget(p.ID)
+	s.cgpt.sessions.forget(p.ID)
+	s.cgpt.logins.forget(p.ID)
 }
 
 // testChatGPT 는 저장된 구독 프로필로 실제 최소 호출을 보내 연결을 확인한다. 폼의 모델·추론 강도를

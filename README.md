@@ -168,7 +168,7 @@ OpenAI 의 리디렉션 주소는 반드시 `http://127.0.0.1:<포트>/auth/call
 
 **사용량 한도와 장애 전환**
 
-ChatGPT 설정의 「Usage」에서 앱별 주간 한도를 걸 수 있습니다. 한도에 닿으면 `subscription_sharing_usage_limit_exceeded` 오류가 오며, ARTEX 는 이를 API Key 의 잔액·할당량 소진과 같이 취급해 「LLM 순환」이 켜져 있으면 다음 설정으로 넘어갑니다(`subscription_sharing_usage_unavailable` 같은 일시 오류는 소진으로 보지 않습니다).
+ChatGPT 설정의 「Usage」에서 앱별 주간 한도를 걸 수 있습니다. 한도에 닿으면 `subscription_sharing_usage_limit_exceeded` 오류가 오며, OpenAI 문서가 구독 요청을 다른 결제 경로로 자동 전환하지 말라고 하므로, ARTEX 는 이를 API Key 의 잔액·할당량 소진처럼 취급하지 않습니다. 「LLM 순환」이 켜져 있어도 유료 API Key 설정으로 **자동 장애 전환하지 않고**, 한도에 닿았다는 안내와 함께 오류로 드러냅니다. ChatGPT 설정의 「Usage」에서 한도를 올리거나 풀린 뒤 다시 시도하십시오(`subscription_sharing_usage_unavailable` 같은 일시 오류는 한도 초과가 아닙니다).
 
 **알려진 제한과 주의**
 

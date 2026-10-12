@@ -3,6 +3,7 @@ package siwc
 import (
 	"context"
 	"crypto/rsa"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -68,7 +69,7 @@ func (c *Client) VerifyIDToken(ctx context.Context, idToken, clientID, wantNonce
 		return nil, newErr(CodeInvalidIDToken, false)
 	}
 	if !tok.Valid || claims.Subject == "" || claims.IssuedAt == nil ||
-		(wantNonce != "" && claims.Nonce != wantNonce) ||
+		(wantNonce != "" && subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(wantNonce)) != 1) ||
 		(claims.Azp != "" && claims.Azp != clientID) ||
 		(len(claims.Audience) > 1 && claims.Azp != clientID) {
 		return nil, newErr(CodeInvalidIDToken, false)

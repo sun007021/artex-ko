@@ -85,6 +85,16 @@ func init() {
 			"zh": "正在进行的登录过多。请稍后重试",
 			"es": "Hay demasiados inicios de sesión en curso. Vuelva a intentarlo en breve",
 		},
+		errChatGPTInvalidClient: {
+			"en": "ChatGPT no longer accepts this app registration. Sign in again to register the app anew",
+			"zh": "ChatGPT 不再接受此应用注册。请重新登录以重新注册应用",
+			"es": "ChatGPT ya no acepta el registro de esta aplicación. Inicie sesión de nuevo para registrarla otra vez",
+		},
+		errChatGPTModelRequired: {
+			"en": "A model must be selected for the ChatGPT subscription method",
+			"zh": "ChatGPT 订阅方式必须选择模型",
+			"es": "Debe seleccionar un modelo para el método de suscripción de ChatGPT",
+		},
 		errMgmtLLMBadAuthMode: {
 			"en": "Unsupported authentication method",
 			"zh": "不支持的认证方式",

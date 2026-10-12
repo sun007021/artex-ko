@@ -169,7 +169,7 @@ func newCGPTRig(t *testing.T) *cgptRig {
 
 	rig := &cgptRig{t: t, d: d, iss: newFakeIssuer(t)}
 	s := &Server{m: &Manager{pg: d}, jwtKey: []byte(strings.Repeat("c", 32)), llmHealth: newLLMHealthRegistry(d)}
-	s.cgpt.issuer = rig.iss.srv.URL
+	s.cgpt.sessions.issuer = rig.iss.srv.URL
 	s.afterAuthChange = func() { rig.changes++ }
 	rig.s = s
 	tok, err := signJWT(s.signingKey(s.readPassHash()))
@@ -256,6 +256,10 @@ func (r *cgptRig) start(id int64, extra map[string]any) (string, url.Values) {
 			r.t.Fatalf("/auth/start = %d %v", rec.Code, rec.Header())
 		}
 		authURL = rec.Header().Get("Location")
+		// 재인가 URL 은 한 번만 나온다 — 주소창·히스토리에 남은 state URL 을 다시 열어도 받을 수 없다.
+		if again := r.raw("GET", out["auth_url"].(string), "", nil); again.Code != http.StatusBadRequest || again.Header().Get("Location") != "" {
+			r.t.Fatalf("/auth/start 재사용 = %d %v", again.Code, again.Header())
+		}
 	}
 	return authURL, r.iss.learn(r.t, authURL)
 }
@@ -682,21 +686,53 @@ func TestChatGPTTaskResolutionReadinessDB(t *testing.T) {
 }
 
 func TestChatGPTPendingLoginsAreBounded(t *testing.T) {
-	var rt chatgptRuntime
-	rt.pending = map[string]*chatgptLogin{}
+	var l chatgptLogins
+	l.pending = map[string]*chatgptLogin{}
 	for i := 0; i < chatgptMaxPending+5; i++ {
-		rt.pending[fmt.Sprint(i)] = &chatgptLogin{profileID: int64(i), p: &siwc.Pending{State: fmt.Sprint(i)}, expires: time.Now().Add(-time.Second)}
+		l.pending[fmt.Sprint(i)] = &chatgptLogin{profileID: int64(i), p: &siwc.Pending{State: fmt.Sprint(i)}, expires: time.Now().Add(-time.Second)}
 	}
-	if rt.findLogin("3", false) != nil {
+	if l.find("3", false) != nil {
 		t.Fatal("만료된 로그인은 찾아지면 안 됩니다")
 	}
-	if rt.loginForProfile(4) != nil {
+	if l.forProfile(4) != nil {
 		t.Fatal("만료된 로그인은 프로필 조회에서도 제외됩니다")
 	}
 	live := &chatgptLogin{profileID: 7, p: &siwc.Pending{State: "live"}, expires: time.Now().Add(time.Minute)}
-	rt.pending["live"] = live
-	if rt.findLogin("live", false) != live || rt.findLogin("live", true) != live || rt.findLogin("live", false) != nil {
+	l.pending["live"] = live
+	if l.find("live", false) != live || l.find("live", true) != live || l.find("live", false) != nil {
 		t.Fatal("consume=true 는 한 번만 가져가야 합니다")
+	}
+	// 동시 시도 상한: 만료분을 정리한 뒤에도 가득 차 있으면 거절한다.
+	var full chatgptLogins
+	for i := 0; i < chatgptMaxPending; i++ {
+		if _, ok := full.begin(int64(i), &siwc.Pending{State: fmt.Sprint("s", i)}, ""); !ok {
+			t.Fatalf("%d 번째 시도가 거절됐습니다", i)
+		}
+	}
+	if _, ok := full.begin(999, &siwc.Pending{State: "over"}, ""); ok {
+		t.Fatal("상한을 넘는 시도는 거절돼야 합니다")
+	}
+	// 같은 프로필의 새 시도는 이전 시도를 대체하므로 상한에 걸리지 않는다.
+	if _, ok := full.begin(3, &siwc.Pending{State: "again"}, ""); !ok || full.find("s3", false) != nil {
+		t.Fatal("같은 프로필의 재시도는 이전 시도를 대체해야 합니다")
+	}
+}
+
+// /auth/start 의 재인가 URL 은 한 번만 나온다(주소창·히스토리에 남은 state URL 의 재사용 방지).
+func TestChatGPTStartURLIsSingleUse(t *testing.T) {
+	var l chatgptLogins
+	l.begin(1, &siwc.Pending{State: "st"}, "https://auth.example/authorize?id_token_hint=x")
+	if u := l.takeStartURL("st"); u == "" {
+		t.Fatal("첫 요청은 URL 을 받아야 합니다")
+	}
+	if u := l.takeStartURL("st"); u != "" {
+		t.Fatalf("두 번째 요청은 URL 을 받으면 안 됩니다: %q", u)
+	}
+	if l.find("st", false) == nil {
+		t.Fatal("URL 을 가져가도 로그인 시도 자체는 남아 있어야 합니다(콜백이 이어서 마무리)")
+	}
+	if u := l.takeStartURL("unknown"); u != "" {
+		t.Fatal("모르는 state")
 	}
 }
 
@@ -752,7 +788,7 @@ func TestChatGPTMessagesTranslated(t *testing.T) {
 		errChatGPTInvalidState, errChatGPTDenied, errChatGPTRegistration, errChatGPTInvalidGrant,
 		errChatGPTInvalidIDToken, errChatGPTIdentityDown, errChatGPTAccountMismatch, errChatGPTLoginRequired,
 		errChatGPTPlanDisabled, errChatGPTNetwork, errChatGPTNotEligible, errChatGPTGeneric, errChatGPTNoProfile,
-		errChatGPTNoPending, errChatGPTBadCallback, errChatGPTTooManyLogins, errMgmtLLMBadAuthMode,
+		errChatGPTNoPending, errChatGPTBadCallback, errChatGPTTooManyLogins, errChatGPTInvalidClient, errChatGPTModelRequired, errMgmtLLMBadAuthMode,
 		reasonLLMProfileChatGPTOff, msgChatGPTCallbackDoneTitle, msgChatGPTCallbackDoneBody,
 		msgChatGPTCallbackFailTitle, msgChatGPTCallbackBadReq,
 	} {
@@ -775,5 +811,38 @@ func TestChatGPTMessagesTranslated(t *testing.T) {
 	config.CurrentLanguage = func() string { return "en" }
 	if got := trChatGPTMsg(errChatGPTGeneric + " (some_code)"); got != "The ChatGPT request failed (some_code)" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestChatGPTProfileRequiresModelDB(t *testing.T) {
+	r := newCGPTRig(t)
+	for _, model := range []string{"", "   "} {
+		code, out := r.do("POST", "/api/llm/profiles", map[string]any{
+			"name": "cgpt-nomodel-" + fmt.Sprint(time.Now().UnixNano()), "model": model, "auth_mode": "chatgpt",
+		})
+		if code != 400 {
+			t.Fatalf("모델 없는 구독 프로필 저장 = %d %v, 400 이어야 합니다", code, out)
+		}
+	}
+}
+
+// 발급자가 앱 등록을 거부(invalid_client)한 상태는 화면에 이유와 함께 보이고, 다시 로그인하면
+// 저장된 client_id 를 재사용하지 않고 새로 등록한다.
+func TestChatGPTInvalidClientIsVisibleAndReRegistersDB(t *testing.T) {
+	r := newCGPTRig(t)
+	id := r.profile("cgpt-badclient-" + fmt.Sprint(time.Now().UnixNano()))
+	if err := r.d.SaveProfileOAuth(context.Background(), &db.ProfileOAuth{
+		ProfileID: id, ClientID: "oaiapp_revoked", Subject: "sub-1", Email: "user-1@example.com", IDToken: "idt",
+		RefreshToken: "", Status: db.OAuthStatusReauthNeeded, LastError: siwc.CodeInvalidClient,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st := r.status(id)
+	if st["status"] != "reauth_required" || st["last_error"] != siwc.CodeInvalidClient || st["last_error_message"] == nil || st["last_error_message"] == "" {
+		t.Fatalf("invalid_client 상태가 보이지 않습니다: %v", st)
+	}
+	_, q := r.start(id, nil)
+	if q.Get("client_id") != siwc.DynamicClientID || q.Has("id_token_hint") {
+		t.Fatalf("거부된 client_id 를 다시 쓰면 안 됩니다: %v", q)
 	}
 }

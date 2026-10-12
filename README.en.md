@@ -163,7 +163,7 @@ OpenAI's redirect address must be `http://127.0.0.1:<port>/auth/callback` (only 
 
 **Usage limits and failover**
 
-You can set a weekly per-app limit under "Usage" in ChatGPT settings. When it is reached the error `subscription_sharing_usage_limit_exceeded` is returned. ARTEX treats this like an exhausted balance or quota on an API key, so with "LLM rotation" enabled it moves on to the next profile (transient errors such as `subscription_sharing_usage_unavailable` are not treated as exhaustion).
+You can set a weekly per-app limit under "Usage" in ChatGPT settings. When it is reached the error `subscription_sharing_usage_limit_exceeded` is returned. The OpenAI documentation says a subscription request must not be switched to another billing path automatically, so ARTEX does not treat this like an exhausted balance or quota on an API key: even with "LLM rotation" enabled it does **not** fail over to a paid API-key profile. It surfaces the error with a note that the limit was reached. Raise the limit under "Usage" in ChatGPT settings or retry once it resets (transient errors such as `subscription_sharing_usage_unavailable` are not a limit-exceeded condition).
 
 **Known limits and cautions**
 

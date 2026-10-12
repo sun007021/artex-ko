@@ -252,12 +252,13 @@ func readRequestBody(req *http.Request) ([]byte, error) {
 // tokenErrorResponse 는 토큰을 못 얻은 실패를 HTTP 응답으로 바꿔 준다. 전송 오류로 돌려주면 norma 가
 // 같은 요청을 연결 오류로 재시도하므로 상태 코드로 의미를 나눠 합성한다:
 //   - 재시도가 무의미한 실패(재로그인 필요, 연결 안 됨, 권한 없음, 등록 거부)는 401. norma 는 401 을
-//     재시도하지 않고 곧바로 오류로 올린다. LLM 순환(llmpool)이 켜져 있으면 401 은 "이 설정은 고쳐질 때까지
-//     실패"하는 하드 실패로 보고 다음 설정으로 넘어가지만, 작업의 LLM 체인과 할당량 소진 전환
-//     (IsQuotaExhaustedMessage)은 401 로는 움직이지 않는다.
+//     재시도하지 않고 곧바로 오류로 올린다. LLM 순환(llmpool)은 401 도 장애 전환 대상으로 보고
+//     "고쳐질 때까지 실패하는" 하드 실패로 첫 발생에 회로를 연 채 다음 설정으로 넘어간다
+//     (llmpool.shouldFailover / isHardFailure). 할당량 소진 전환(IsQuotaExhaustedMessage)은 문구
+//     기반이라 이 오류로는 움직이지 않는다.
 //   - 일시적 장애(인증 서버 연결 실패, 갱신 대기 중 등)는 503. norma 가 자체 백오프로 몇 번 재시도하고
 //     (세션도 갱신 실패 뒤 백오프를 두므로 그 사이 인증 서버를 두드리지 않는다), 그래도 안 되면 순환이
-//     켜진 경우에 한해 일시 실패로 다음 설정을 시도한다.
+//     켜진 경우 llmpool 이 5xx 를 일시 실패로 보고 다음 설정으로 넘어간다.
 func tokenErrorResponse(req *http.Request, err error) (*http.Response, error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || req.Context().Err() != nil {
 		return nil, err
