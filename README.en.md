@@ -138,7 +138,7 @@ Upstream provides several methods: an install script (`./install.sh`), precompil
 }
 ```
 
-**LLM:** `export ANTHROPIC_API_KEY=sk-...` (or `OPENAI_API_KEY`), or enter it on the UI's "LLM settings" page. Instead of an API key you can also sign in with a ChatGPT Plus/Pro subscription ([see below](#using-a-chatgpt-subscription-no-api-key)). Optional environment variables: `ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`. To use a domestic or open model, point `ARTEX_LLM_BASE_URL` at an OpenAI-compatible endpoint.
+**LLM:** `export ANTHROPIC_API_KEY=sk-...` (or `OPENAI_API_KEY`), or enter it on the UI's "LLM settings" page. Instead of an API key you can also sign in with a ChatGPT Plus/Pro subscription ([see below](#using-a-chatgpt-subscription-no-api-key)), and — for personal use on your own PC only — use a Claude subscription through the official `claude` CLI that you signed in to yourself ([see below](#using-a-claude-subscription-official-claude-cli-personal-local-use-only)). Optional environment variables: `ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`. To use a domestic or open model, point `ARTEX_LLM_BASE_URL` at an OpenAI-compatible endpoint.
 
 **Output language:** this edition forces user-facing output into Korean via a small, code-fixed directive appended to each role's system prompt (it does not translate the reasoning body). If you need a different output language, adapt that directive in `agent/prompt.go` (`langDirective`).
 
@@ -179,7 +179,52 @@ You can set a weekly per-app limit under "Usage" in ChatGPT settings. When it is
 - [Token sharing (open source) — models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
 - [OpenAI Help: supported open-source tools](https://help.openai.com/articles/20001542)
 
-**Claude subscriptions (Pro/Max) are not supported.** Anthropic does not permit third-party applications to offer Claude.ai login or to route requests through a user's Free, Pro or Max credentials, and it prohibits developers from collecting, storing or intermediating Claude.ai credentials or session tokens. ARTEX does not build a feature that uses a Claude subscription as the agent engine's LLM. Use Claude models with an API key. Basis: [Claude Code legal and compliance](https://code.claude.com/docs/en/legal-and-compliance), [Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview).
+**A Claude subscription (Pro/Max)** can be used only in the separate form below. Third-party apps offering Claude.ai login, or taking a user's credentials to send requests on their behalf, are not permitted by Anthropic's terms and remain unsupported.
+
+### Using a Claude subscription (official claude CLI, personal local use only)
+
+> **Off by default.** This feature is only for using your own Claude Pro/Max subscription **on your own PC, by yourself**. Do not expose this ARTEX to other people or share your subscription. Test only targets you are authorized to test and do not try to bypass Claude's refusals. Whether automated use falls within the subscription terms is Anthropic's call, and Anthropic may restrict or suspend access if they are violated. You are responsible for your use.
+
+**How it works.** ARTEX runs the **official `claude` CLI** — installed and signed in by you — as a child process in headless mode (`claude -p`, stream-json input and output). ARTEX never reads (`~/.claude/.credentials.json`, the keychain, `CLAUDE_CODE_OAUTH_TOKEN`, ...), stores, logs or forwards Claude credentials. It does not call `api.anthropic.com` with subscription credentials, does not send headers that impersonate Claude Code, and does not modify, patch or wrap the `claude` binary; it uses documented flags only. Authentication happens entirely inside `claude`; all ARTEX reads is the login state and the authentication method (`authMethod`) from the JSON that `claude auth status` prints.
+
+**Agent behaviour is kept as close as possible to the API Key path.** ARTEX keeps the agent loop, and one model call corresponds to one `claude` response (a provider bridge). All of `claude`'s built-in tools are turned off (`--tools ""`) and only ARTEX's tools are shown, over an MCP server reachable on `127.0.0.1` only (names get a `mcp__artex__` prefix). A tool call holds the MCP response open until ARTEX has executed the tool and returns its result, so permission checks, approvals, hooks, traffic capture, finding/asset/graph writes, transcripts and activity records are handled by the same ARTEX code as the API Key path. Role prompts are passed through `--system-prompt-file` untranslated and unmodified.
+
+**How to use it**
+
+1. In a terminal, install Claude Code (2.1.259 or newer) and sign in to your own subscription **yourself** with `claude auth login`. `claude auth status` should report the method `claude.ai`.
+2. Under "System → LLM" choose "New" → **Authentication** "Claude Code (subscription, personal local use)". Read the notice in the panel, tick the confirmation box and **turn it on** (an opt-in switch for the whole installation).
+3. Set the model (type an alias such as `sonnet` or `opus`, or a full name; blank uses `claude`'s default model) and the reasoning effort (`low` to `max`, passed as `--effort`), check it with "Test connection", then save. If `claude` is missing, too old or not signed in, the panel and the test result say why.
+4. "Set active" on the card, or assign this profile to a task or agent.
+
+**Environment and isolation**
+
+- The child process environment has **`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` removed** (if present, `claude` would use API billing instead of the subscription). `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL` and cloud-provider variables (Bedrock/Vertex, ...) are removed too, your personal settings (CLAUDE.md, auto memory, hooks, plugins, background tasks, ...) are kept out of the agent through environment variables and flags, and the process runs in a dedicated empty working directory. `--bare` is not used because it ignores subscription login.
+- If `authMethod` is not `claude.ai` or `oauth_token` (`api_key`, `api_key_helper`, third-party providers, ...) it is **treated as an API-billing path and refused**.
+- The MCP endpoint listens on a random port on `127.0.0.1` only, uses a 256-bit per-process token in its path, and checks the Host and Origin headers.
+- It will not turn on while ARTEX is reachable on an address other than `127.0.0.1` (a deployment you have checked yourself, for example a container whose port is published only on the host's `127.0.0.1`, can be allowed with the environment variable `ARTEX_CLAUDE_CODE_ALLOW_NONLOOPBACK=1`). The official Docker image does not contain `claude`, so this feature is best used with ARTEX running directly on your host.
+
+**Limits and concurrency**
+
+- The global cap on `claude` processes producing a model response at the same time defaults to 1 and cannot be set above 3. Processes waiting for a tool to run do not hold a slot.
+- When a subscription usage limit is hit, no new requests are sent (until the reported reset time; 30 minutes if unknown, 12 hours at most) and the error is surfaced; with "LLM rotation" on, ARTEX fails over to the next profile. Transient rate limits and overload back off exponentially from 30 seconds to 5 minutes. There are no tight retries and no switching between accounts.
+
+**Known limits (differences from the API Key path)**
+
+- `claude`'s own agent loop and automatic context compaction can run alongside ARTEX's compaction.
+- After ARTEX compacts the start of the conversation, or after a process restart or a 10-minute idle expiry, the conversation is **fed back as a text transcript** (not as structured `tool_use` blocks). The content is the same but the form the model receives differs slightly.
+- The default prompt is replaced with `--system-prompt-file`, but the binary may still prepend its own identity text. The `mcp__artex__` prefix on tool names is explained by a short, code-fixed note at the end of the system prompt.
+- The output token cap, temperature, per-second/minute rate limits and the thinking type do not apply (hidden in the UI). Responses always stream.
+- When the same tool is called several times at once with identical arguments, matching results to calls depends on arrival order. With different arguments they are matched exactly by arguments.
+- Some user-facing errors appear in Korean only.
+- **Verification scope.** The shape of `claude`'s stream-json output is an assumption based on the official documentation, and this repository's tests run against a fake `claude` that follows it (tool round trip, several tools, usage limit, crash, cancellation, concurrency cap, environment sanitising, ...). End-to-end calls against the real `claude` are not made in CI, so on a new setup check with "Test connection" and a short task first.
+
+**Policy basis and what is uncertain.** Anthropic's documentation describes Claude Code as the official CLI and `claude -p` (headless) and `claude setup-token` as meant for scripts and automation, and it distinguishes an individual using the official CLI with their own subscription from a third party handling credentials or serving other people with a subscription. ARTEX takes only the former shape. However, the consumer terms restrict automated access that is not explicitly permitted and account sharing, and allow suspension without prior notice, so **whether an agent loop that runs overnight counts as "ordinary individual usage" is for Anthropic to decide, and ARTEX cannot guarantee it.** Using the model with an API key is the safest choice, and third-party apps offering Claude.ai login or routing requests through a user's Free, Pro or Max credentials remain unsupported.
+
+- [Claude Code legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)
+- [Authentication](https://code.claude.com/docs/en/authentication)
+- [Headless usage (`claude -p`)](https://code.claude.com/docs/en/headless)
+- [CLI reference](https://code.claude.com/docs/en/cli-reference)
+- [Anthropic consumer terms](https://www.anthropic.com/legal/consumer-terms)
 
 ### Model selection and output language
 

@@ -13,7 +13,9 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 > ⚠️ **安全与合规提示（韩语本地化版本）**：本仓库是 [Autumn-27/ARTEX](https://github.com/Autumn-27/ARTEX) 的韩语本地化 fork，仅供在获得授权的环境中、以防御与检测为目的使用。2026 年 10 月有韩国媒体报道称，调查机构在针对韩国金融机构的个人信息泄露事件中发现了 ARTEX 被使用的迹象（调查进行中）。请勿对未经书面授权的系统进行扫描、探测或利用。完整警告请见 [README.md（한국어）](README.md) 与 [README.en.md（English）](README.en.md)。
 
-> 💡 **使用 ChatGPT 订阅（韩语本地化版新增）**：除 API Key 外，LLM 配置现在可以选择“ChatGPT 订阅 (Plus/Pro)”认证方式，走 OpenAI 官方“Sign in with ChatGPT”面向开源/本地个人使用的令牌共享路径；不读取 Codex CLI 的令牌文件，也不调用 ChatGPT 内部 `backend-api`。Claude 订阅（Pro/Max）因 Anthropic 条款禁止第三方应用代理其凭据，故不支持。用法、限制与依据请见 [README.md（한국어）](README.md#chatgpt-구독으로-사용하기-api-key-없이) 与 [README.en.md（English）](README.en.md#using-a-chatgpt-subscription-no-api-key)。
+> 💡 **使用 ChatGPT 订阅（韩语本地化版新增）**：除 API Key 外，LLM 配置现在可以选择“ChatGPT 订阅 (Plus/Pro)”认证方式，走 OpenAI 官方“Sign in with ChatGPT”面向开源/本地个人使用的令牌共享路径；不读取 Codex CLI 的令牌文件，也不调用 ChatGPT 内部 `backend-api`。第三方应用代理 Claude 订阅（Pro/Max）凭据的方式因 Anthropic 条款禁止而不支持。用法、限制与依据请见 [README.md（한국어）](README.md#chatgpt-구독으로-사용하기-api-key-없이) 与 [README.en.md（English）](README.en.md#using-a-chatgpt-subscription-no-api-key)。
+
+> 💡 **使用 Claude 订阅（韩语本地化版新增，默认关闭，仅限个人本地使用）**：LLM 配置新增“Claude Code (订阅，个人本地使用)”认证方式，由 ARTEX 以无头模式驱动**您自己安装并自行登录的官方 `claude` CLI**。ARTEX 不读取、保存或转发 Claude 凭据，不修改 claude 可执行文件，并会从子进程环境中移除 `ANTHROPIC_API_KEY` 与 `ANTHROPIC_AUTH_TOKEN`；若 `claude` 使用的是 API Key 等非订阅认证，则按 API 计费路径拒绝。请勿把该实例暴露给他人或共享订阅，只测试获得授权的目标，不要试图绕过 Claude 的拒绝；自动化使用是否符合订阅条款由 Anthropic 判断，违规可能被限制或暂停。用法、限制与依据请见 [README.md（한국어）](README.md#claude-구독으로-사용하기-공식-claude-cli-개인-로컬-사용-전용) 与 [README.en.md（English）](README.en.md#using-a-claude-subscription-official-claude-cli-personal-local-use-only)。
 
 ---
 
