@@ -477,9 +477,13 @@ END $$;
 -- 'chatgpt' 프로필은 항상 format='openai-responses' 이며 api_key 를 갖지 않는다
 -- (OAuth 자격 증명은 아래 llm_profile_oauth 에 둔다). 기본값 '' 이므로 기존 프로필은 그대로다.
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS auth_mode TEXT NOT NULL DEFAULT '';
+-- 'claude-code' = 사용자가 이 PC 에서 직접 로그인한 공식 claude CLI(Claude Code)를 헤드리스로 구동.
+-- 이 프로필은 항상 format='anthropic' 이고 api_key 를 갖지 않으며, 자격 증명은 DB 에 없다.
 ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_auth_mode_check;
 ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_auth_mode_check
-    CHECK (auth_mode IN ('','chatgpt') AND (auth_mode = '' OR format = 'openai-responses'));
+    CHECK (auth_mode IN ('','chatgpt','claude-code') AND
+           (auth_mode = '' OR (auth_mode = 'chatgpt' AND format = 'openai-responses')
+                           OR (auth_mode = 'claude-code' AND format = 'anthropic')));
 
 -- ChatGPT 구독(Sign in with ChatGPT) OAuth 자격 증명. 프로필당 최대 1행.
 --   client_id     : 최초 등록(dynamic_agent_client) 뒤 발급된 oaiapp_... 값. 비밀이 아니며,

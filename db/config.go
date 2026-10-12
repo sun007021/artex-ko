@@ -66,13 +66,25 @@ type LLMProfile struct {
 	// exactly as before. See RetryOverride.
 	Retry RetryOverride `json:"retry"`
 	// AuthMode 는 인증 방식이다. "" = API Key(기본), AuthModeChatGPT = ChatGPT 구독
-	// (Sign in with ChatGPT). 구독 프로필은 항상 format=openai-responses 이고 APIKey 를
-	// 갖지 않으며, OAuth 자격 증명은 llm_profile_oauth(ProfileOAuth)에 따로 저장된다.
+	// (Sign in with ChatGPT), AuthModeClaudeCode = 이 PC 에 설치·로그인된 공식 claude CLI.
+	// 구독 프로필은 APIKey 를 갖지 않는다. ChatGPT 의 OAuth 자격 증명은 llm_profile_oauth
+	// (ProfileOAuth)에 따로 저장되고, claude-code 는 자격 증명을 ARTEX 가 전혀 보관하지 않는다.
 	AuthMode string `json:"auth_mode"`
 }
 
 // AuthModeChatGPT 는 ChatGPT 플랜(Plus/Pro) 사용량으로 추론하는 인증 방식이다.
 const AuthModeChatGPT = "chatgpt"
+
+// AuthModeClaudeCode 는 사용자가 자기 PC 에서 직접 로그인한 공식 `claude` CLI(Claude Code)를
+// 헤드리스로 구동해 추론하는 인증 방식이다. 프로필은 항상 format=anthropic 이고 base_url/API
+// Key 를 갖지 않는다. 모델(--model)과 추론 강도(--effort)는 프로필의 Model/ReasoningEffort 를
+// 그대로 쓴다. 로그인은 claude 바이너리 안에서만 일어나며 ARTEX 는 토큰을 읽지 않는다.
+const AuthModeClaudeCode = "claude-code"
+
+// validAuthMode 는 저장할 수 있는 인증 방식인지 알려 준다.
+func validAuthMode(m string) bool {
+	return m == "" || m == AuthModeChatGPT || m == AuthModeClaudeCode
+}
 
 // RetryOverride is one profile's optional override of the three retry layers
 // that are per-endpoint: 建连(connect) / 空响应(empty) / 同 provider 安全窗口
@@ -144,11 +156,12 @@ func (d *DB) ProfileByID(id int64) (*LLMProfile, error) {
 // active profile first, then every other usable profile that isn't excluded, by
 // priority DESC (id ASC to stay stable). A profile that can't serve a request —
 // no api key, or a ChatGPT-subscription profile that isn't signed in — never
-// enters the chain. The ordering IS the policy — callers
+// enters the chain. claude-code 프로필은 로그인 상태를 DB 가 알 수 없으므로(자격 증명이
+// claude 바이너리 안에만 있다) 항상 후보이고, 실제 가용성은 호출 시점에 드러난다. The ordering IS the policy — callers
 // walk the slice front to back.
 func (d *DB) PoolProfiles() ([]*LLMProfile, error) {
 	rows, err := d.Query(`SELECT ` + profileColsKey + ` FROM llm_profiles
-WHERE (COALESCE(api_key,'') <> '' OR (auth_mode='chatgpt' AND EXISTS (
+WHERE (COALESCE(api_key,'') <> '' OR auth_mode='claude-code' OR (auth_mode='chatgpt' AND EXISTS (
         SELECT 1 FROM llm_profile_oauth o
          WHERE o.profile_id=llm_profiles.id AND o.status='connected' AND o.refresh_token <> '')))
   AND (is_default OR NOT pool_exclude)
@@ -174,13 +187,19 @@ ORDER BY is_default DESC, priority DESC, id ASC`)
 // openai-responses 로 고정, base_url 은 비우고(토큰이 엉뚱한 호스트로 가지 않게 호출 쪽에서도
 // api.openai.com 으로 고정한다), api_key 는 지운다 — 인증 방식을 API Key 에서 구독으로 바꿀 때
 // 예전 키가 DB 에 남아 있지 않게 한다. OAuth 자격 증명은 이 함수가 건드리지 않는다.
+// claude-code 프로필도 같은 이유로 format=anthropic 고정, base_url/api_key 를 비운다.
 func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
-	if p.AuthMode != "" && p.AuthMode != AuthModeChatGPT {
+	if !validAuthMode(p.AuthMode) {
 		return 0, fmt.Errorf("unknown auth_mode %q", p.AuthMode)
 	}
 	if p.AuthMode == AuthModeChatGPT {
 		cp := *p
 		cp.Format, cp.BaseURL, cp.APIKey, cp.APIKeyHint = "openai-responses", "", "", ""
+		p = &cp
+	}
+	if p.AuthMode == AuthModeClaudeCode {
+		cp := *p
+		cp.Format, cp.BaseURL, cp.APIKey, cp.APIKeyHint = "anthropic", "", "", ""
 		p = &cp
 	}
 	hint := p.APIKeyHint
@@ -197,10 +216,10 @@ VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$
 		return id, err
 	}
 	if p.APIKey == "" {
-		// api_key 를 비워 둔 갱신 = 기존 키 유지. 단 구독 프로필로 바꾸는 경우(auth_mode=chatgpt)는
-		// 예전 키와 힌트를 지운다.
+		// api_key 를 비워 둔 갱신 = 기존 키 유지. 단 구독 프로필로 바꾸는 경우(auth_mode 가
+		// chatgpt/claude-code)는 예전 키와 힌트를 지운다.
 		_, err := d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,rate_per_second=$6,rate_per_minute=$7,context_window_k=$8,reasoning_effort=$9,priority=$10,pool_exclude=$11,thinking_type=$12,streaming=$13,max_tokens=$14,max_tokens_field=$15,session_header_key=$16,retry_connect_attempts=$17,retry_connect_interval_ms=$18,retry_empty_attempts=$19,retry_empty_interval_ms=$20,retry_stream_attempts=$21,retry_stream_interval_ms=$22,auth_mode=$23,
-api_key=CASE WHEN $23='chatgpt' THEN NULL ELSE api_key END,api_key_hint=CASE WHEN $23='chatgpt' THEN NULL ELSE api_key_hint END WHERE id=$24`,
+api_key=CASE WHEN $23<>'' THEN NULL ELSE api_key END,api_key_hint=CASE WHEN $23<>'' THEN NULL ELSE api_key_hint END WHERE id=$24`,
 			p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey,
 			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.AuthMode, p.ID)
 		return p.ID, err
