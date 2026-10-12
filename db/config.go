@@ -192,14 +192,11 @@ func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
 	if !validAuthMode(p.AuthMode) {
 		return 0, fmt.Errorf("unknown auth_mode %q", p.AuthMode)
 	}
-	if p.AuthMode == AuthModeChatGPT {
+	if p.AuthMode == AuthModeChatGPT || p.AuthMode == AuthModeClaudeCode {
+		// 호출자가 원본을 계속 쓸 수 있도록 복사본을 정리한다. 검증 오류(빈 모델 등)는 서버 핸들러의 몫이다 —
+		// 여기서는 필드만 정리한다.
 		cp := *p
-		cp.Format, cp.BaseURL, cp.APIKey, cp.APIKeyHint = "openai-responses", "", "", ""
-		p = &cp
-	}
-	if p.AuthMode == AuthModeClaudeCode {
-		cp := *p
-		cp.Format, cp.BaseURL, cp.APIKey, cp.APIKeyHint = "anthropic", "", "", ""
+		_ = cp.NormalizeSubscription()
 		p = &cp
 	}
 	hint := p.APIKeyHint

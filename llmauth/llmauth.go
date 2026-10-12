@@ -59,3 +59,12 @@ func ClampClaudeCodeConcurrent(n int) int {
 	}
 	return n
 }
+
+// ValidClaudeEffort reports whether e is an accepted claude-code reasoning effort ("" = the CLI default).
+func ValidClaudeEffort(e string) bool {
+	switch e {
+	case "", "low", "medium", "high", "xhigh", "max":
+		return true
+	}
+	return false
+}
