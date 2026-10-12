@@ -122,7 +122,9 @@ func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Co
 	if len(members) < 2 {
 		return nil // nothing to fail over to
 	}
-	return llmpool.New(members, s.llmHealth)
+	pool := llmpool.New(members, s.llmHealth)
+	pool.SetNoFailover(agent.IsNoFailoverError) // ChatGPT 사용량 한도는 다른 설정으로 자동 전환하지 않는다
+	return pool
 }
 
 // poolForActive wraps the globally-active provider in the failover chain. Returns

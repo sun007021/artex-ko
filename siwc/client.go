@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Autumn-27/artex/llmauth"
 )
 
 // Documented endpoints and parameters.
@@ -33,7 +35,7 @@ const (
 
 	// ScopePlanUsage is what authorizes plan-billed inference. A valid ID token
 	// alone does not (sign-in.md: "A valid ID token does not authorize plan usage").
-	ScopePlanUsage = "chatgpt.tokens.use.direct"
+	ScopePlanUsage = llmauth.ScopePlanUsage
 )
 
 // Scopes is the full scope set requested on every authorization.
@@ -41,9 +43,9 @@ const Scopes = "openid profile email offline_access resource.invoke " + ScopePla
 
 // Status values stored with a Record (identical to the db column values).
 const (
-	StatusDisconnected = "disconnected"
-	StatusConnected    = "connected"
-	StatusReauth       = "reauth_required"
+	StatusDisconnected = llmauth.StatusDisconnected
+	StatusConnected    = llmauth.StatusConnected
+	StatusReauth       = llmauth.StatusReauth
 )
 
 // Config configures a Client.
@@ -310,14 +312,7 @@ type TokenSet struct {
 // HasScope reports whether scope was granted.
 func (t *TokenSet) HasScope(scope string) bool { return hasScope(t.Scopes, scope) }
 
-func hasScope(scopes []string, want string) bool {
-	for _, s := range scopes {
-		if s == want {
-			return true
-		}
-	}
-	return false
-}
+func hasScope(scopes []string, want string) bool { return llmauth.HasScope(scopes, want) }
 
 // HasPlanUsage reports whether chatgpt.tokens.use.direct was granted.
 func (t *TokenSet) HasPlanUsage() bool { return t.HasScope(ScopePlanUsage) }
@@ -445,10 +440,14 @@ func (c *Client) Exchange(ctx context.Context, p *Pending, cb *Callback) (*Token
 		return nil, nil, err
 	}
 	if ts.IDToken == "" {
+		c.discardRefreshToken(ctx, cb.ClientID, ts.RefreshToken)
 		return nil, nil, newErr(CodeInvalidIDToken, false)
 	}
 	id, err := c.VerifyIDToken(ctx, ts.IDToken, cb.ClientID, p.Nonce, ts.ReceivedAt)
 	if err != nil {
+		// The identity could not be established, so these credentials will never be
+		// used: do not leave the grant alive at the issuer.
+		c.discardRefreshToken(ctx, cb.ClientID, ts.RefreshToken)
 		return nil, nil, err
 	}
 	return ts, id, nil
@@ -459,7 +458,7 @@ func (c *Client) Exchange(ctx context.Context, p *Pending, cb *Callback) (*Token
 // existing grant. The returned set's ID token (if any) is NOT yet verified.
 func (c *Client) Refresh(ctx context.Context, clientID, refreshToken string, prevScopes []string) (*TokenSet, error) {
 	if clientID == "" || clientID == DynamicClientID {
-		return nil, newErr("invalid_client", false)
+		return nil, newErr(CodeInvalidClient, false)
 	}
 	m, err := c.tokenRequest(ctx, url.Values{
 		"grant_type":    {"refresh_token"},

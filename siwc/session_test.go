@@ -11,11 +11,17 @@ import (
 )
 
 // connectedRecord logs in through the mock issuer and returns the session + store.
+//
+// With now == nil the session runs on a private clock that is moved just past the
+// forced-refresh cooldown after the login, so a test can report a 401 for the
+// login's access token right away (a fresher token would not be refreshed again).
 func loggedIn(t *testing.T, m *mockIssuer, now func() time.Time) (*Session, *memStore, *Client) {
 	t.Helper()
-	if now != nil {
-		m.clock = now // mint ID tokens on the same (possibly shifted) clock as the client
+	var aged atomic.Int64
+	if now == nil {
+		now = func() time.Time { return time.Now().Add(time.Duration(aged.Load())) }
 	}
+	m.clock = now // mint ID tokens on the same (possibly shifted) clock as the client
 	c := New(Config{AppName: "ARTEX", Issuer: m.srv.URL, HTTPClient: m.srv.Client(), Now: now})
 	p, cb := beginAndCallback(t, c, "")
 	m.codeHook(p, "oaiapp_new", "user-1", Scopes, nil)
@@ -28,6 +34,7 @@ func loggedIn(t *testing.T, m *mockIssuer, now func() time.Time) (*Session, *mem
 	if err := s.Replace(context.Background(), rec); err != nil {
 		t.Fatal(err)
 	}
+	aged.Store(int64(forcedRefreshCooldown + time.Second))
 	return s, st, c
 }
 
@@ -141,7 +148,34 @@ func TestSessionRefreshesOnceAfter401(t *testing.T) {
 	if err != nil || tok != "access-2" || len(*seen) != 1 {
 		t.Fatalf("%q %v %v", tok, err, *seen)
 	}
-	// a 401 on the NEW token refreshes again
+}
+
+// A 401 that persists after a fresh token is not about the token: the session must not burn a refresh
+// per request, and must hand back the same token so the caller can give up.
+func TestSessionPersistent401DoesNotRefreshAgainWithinCooldown(t *testing.T) {
+	m := newMockIssuer(t)
+	var offset atomic.Int64
+	now := func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }
+	s, _, _ := loggedIn(t, m, now)
+	seen := m.refreshHook("user-1", nil, true)
+	// the login's own token was minted moments ago: a 401 for it does not refresh
+	if tok, err := s.Token(context.Background(), "access-1"); err != nil || tok != "access-1" || len(*seen) != 0 {
+		t.Fatalf("%q %v %v", tok, err, *seen)
+	}
+	offset.Store(int64(forcedRefreshCooldown + time.Second))
+	tok, err := s.Token(context.Background(), "access-1") // genuinely old now: one forced refresh
+	if err != nil || tok != "access-2" || len(*seen) != 1 {
+		t.Fatalf("%q %v %v", tok, err, *seen)
+	}
+	for i := 0; i < 5; i++ { // the new token keeps getting 401 (e.g. wrong workspace)
+		if tok, err = s.Token(context.Background(), "access-2"); err != nil || tok != "access-2" {
+			t.Fatalf("%q %v", tok, err)
+		}
+	}
+	if len(*seen) != 1 {
+		t.Fatalf("refreshed %d times for a persistent 401", len(*seen))
+	}
+	offset.Add(int64(forcedRefreshCooldown + time.Second))
 	if tok, _ = s.Token(context.Background(), "access-2"); tok != "access-3" || len(*seen) != 2 {
 		t.Fatalf("%q %v", tok, *seen)
 	}
@@ -157,7 +191,7 @@ func TestSessionRefreshDeadMarksReauthAndClearsTokens(t *testing.T) {
 				t.Fatalf("got %v", err)
 			}
 			r := st.rec
-			if r.Status != StatusReauth || r.AccessToken != "" || r.RefreshToken != "" || r.IDToken != "" || r.ClientID != "oaiapp_new" || r.Subject != "user-1" || r.LastError != code {
+			if r.Status != StatusReauth || r.AccessToken != "" || r.RefreshToken != "" || r.IDToken == "" || r.ClientID != "oaiapp_new" || r.Subject != "user-1" || r.LastError != code {
 				t.Fatalf("record: %+v", r)
 			}
 			before := len(m.reqs())
@@ -190,7 +224,8 @@ func TestSessionTransientRefreshFailureKeepsCredentials(t *testing.T) {
 	if st.rec.Status != StatusConnected || st.rec.RefreshToken != "refresh-1" {
 		t.Fatalf("credentials must survive a 5xx: %+v", st.rec)
 	}
-	// recovery
+	// recovery (after the backoff window)
+	offset.Store(int64(2*time.Hour + refreshBackoffMax))
 	m.tokenStatus = 0
 	m.clock = now // ID tokens are minted on the same (shifted) clock
 	m.refreshHook("user-1", nil, true)
@@ -212,16 +247,23 @@ func TestSessionPendingIdentityResumesAfterJWKSOutage(t *testing.T) {
 	m.jwksStatus = 503
 	offset.Store(int64(time.Hour))
 
-	_, err := s.Token(context.Background(), "")
-	if CodeOf(err) != CodeIdentityUnavailable {
-		t.Fatalf("got %v", err)
+	// The rotation is checkpointed and the (fresh, same-account) access token keeps working while the
+	// key service is down.
+	tok, err := s.Token(context.Background(), "")
+	if err != nil || tok != "access-2" {
+		t.Fatalf("%q %v", tok, err)
 	}
 	if st.rec.PendingIDToken == "" || st.rec.RefreshToken != "refresh-2" || st.rec.Status != StatusConnected {
 		t.Fatalf("checkpoint missing: %+v", st.rec)
 	}
+	hits := m.jwksHits
+	if tok, err = s.Token(context.Background(), ""); err != nil || tok != "access-2" || m.jwksHits != hits {
+		t.Fatalf("verification retried too soon: %q %v hits %d->%d", tok, err, hits, m.jwksHits)
+	}
 	// service back: verification completes WITHOUT redeeming another refresh token
 	m.jwksStatus = 0
-	tok, err := s.Token(context.Background(), "")
+	offset.Add(int64(verifyRetryEvery + time.Second))
+	tok, err = s.Token(context.Background(), "")
 	if err != nil || tok != "access-2" || len(*seen) != 1 {
 		t.Fatalf("%q %v %v", tok, err, *seen)
 	}

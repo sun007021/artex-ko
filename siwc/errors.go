@@ -52,6 +52,11 @@ const (
 	CodeDiscoveryFailed        = "discovery_failed"
 	CodeInvalidRedirectURI     = "invalid_redirect_uri"
 	CodeAccessDenied           = "access_denied"
+	// CodeInvalidClient is the OAuth error for a client registration the issuer no
+	// longer accepts; a refresh failing with it is terminal but not a token problem.
+	CodeInvalidClient = "invalid_client"
+	// CodeUsageLimitExceeded is OpenAI's code for an exhausted plan / app usage limit.
+	CodeUsageLimitExceeded = "subscription_sharing_usage_limit_exceeded"
 )
 
 func newErr(code string, retryable bool) *Error { return &Error{Code: code, Retryable: retryable} }
@@ -155,7 +160,7 @@ func ParseAPIError(status int, body []byte, requestID string) *Error {
 	switch e.Code {
 	case "subscription_sharing_usage_unavailable", "subscription_sharing_user_unavailable":
 		e.Retryable = true
-	case "subscription_sharing_usage_limit_exceeded":
+	case CodeUsageLimitExceeded:
 		e.Retryable = false
 	default:
 		e.Retryable = status == 429 || status >= 500
@@ -164,5 +169,6 @@ func ParseAPIError(status int, body []byte, requestID string) *Error {
 }
 
 // IsUsageLimit reports whether code means the user's ChatGPT plan / app usage
-// limit is exhausted (quota exhaustion for failover purposes).
-func IsUsageLimit(code string) bool { return code == "subscription_sharing_usage_limit_exceeded" }
+// limit is exhausted. The documentation says not to move such a request to another
+// billing path automatically, so this is NOT quota exhaustion for failover purposes.
+func IsUsageLimit(code string) bool { return code == CodeUsageLimitExceeded }

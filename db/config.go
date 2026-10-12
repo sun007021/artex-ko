@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Autumn-27/artex/llmauth"
 )
 
 // ---------- LLM profiles ----------
@@ -73,18 +75,16 @@ type LLMProfile struct {
 }
 
 // AuthModeChatGPT 는 ChatGPT 플랜(Plus/Pro) 사용량으로 추론하는 인증 방식이다.
-const AuthModeChatGPT = "chatgpt"
+const AuthModeChatGPT = llmauth.ModeChatGPT
 
 // AuthModeClaudeCode 는 사용자가 자기 PC 에서 직접 로그인한 공식 `claude` CLI(Claude Code)를
 // 헤드리스로 구동해 추론하는 인증 방식이다. 프로필은 항상 format=anthropic 이고 base_url/API
 // Key 를 갖지 않는다. 모델(--model)과 추론 강도(--effort)는 프로필의 Model/ReasoningEffort 를
 // 그대로 쓴다. 로그인은 claude 바이너리 안에서만 일어나며 ARTEX 는 토큰을 읽지 않는다.
-const AuthModeClaudeCode = "claude-code"
+const AuthModeClaudeCode = llmauth.ModeClaudeCode
 
 // validAuthMode 는 저장할 수 있는 인증 방식인지 알려 준다.
-func validAuthMode(m string) bool {
-	return m == "" || m == AuthModeChatGPT || m == AuthModeClaudeCode
-}
+func validAuthMode(m string) bool { return llmauth.ValidMode(m) }
 
 // RetryOverride is one profile's optional override of the three retry layers
 // that are per-endpoint: 建连(connect) / 空响应(empty) / 同 provider 安全窗口
@@ -161,9 +161,9 @@ func (d *DB) ProfileByID(id int64) (*LLMProfile, error) {
 // walk the slice front to back.
 func (d *DB) PoolProfiles() ([]*LLMProfile, error) {
 	rows, err := d.Query(`SELECT ` + profileColsKey + ` FROM llm_profiles
-WHERE (COALESCE(api_key,'') <> '' OR auth_mode='claude-code' OR (auth_mode='chatgpt' AND EXISTS (
+WHERE (COALESCE(api_key,'') <> '' OR auth_mode='` + AuthModeClaudeCode + `' OR (auth_mode='` + AuthModeChatGPT + `' AND EXISTS (
         SELECT 1 FROM llm_profile_oauth o
-         WHERE o.profile_id=llm_profiles.id AND o.status='connected' AND o.refresh_token <> '')))
+         WHERE o.profile_id=llm_profiles.id AND o.status='` + OAuthStatusConnected + `' AND o.refresh_token <> '')))
   AND (is_default OR NOT pool_exclude)
 ORDER BY is_default DESC, priority DESC, id ASC`)
 	if err != nil {

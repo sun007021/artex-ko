@@ -11,7 +11,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/Autumn-27/artex/claudecode"
 	"io"
 	"log"
 	"net/http"
@@ -19,9 +18,12 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/claudecode"
 	"github.com/Autumn-27/artex/llmrec"
+	"github.com/Autumn-27/artex/siwc"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/compaction"
 	"github.com/Autumn-27/norma/llm"
@@ -321,12 +323,12 @@ var transientQuotaLimit = regexp.MustCompile(`(?i)(?:\b(?:rpm|tpm|rpd|qps)\b|quo
 
 func IsQuotaExhaustedMessage(message string) bool {
 	message = strings.ToLower(message)
-	// ChatGPT 구독: 사용자의 플랜/앱 사용량 한도 소진. 응답이 429 본문이든 스트림 중
-	// response.failed 든 이 코드가 그대로 남는다. 일시적 한도(rate limit)가 아니라 사용자가
-	// ChatGPT 설정 > Usage 에서 풀기 전까지 계속되는 한도이므로 장애 전환 대상이다.
-	// (subscription_sharing_usage_unavailable 은 일시적 장애라 여기에 넣지 않는다.)
-	if strings.Contains(message, "subscription_sharing_usage_limit_exceeded") {
-		return true
+	// ChatGPT 구독의 사용량 한도(subscription_sharing_usage_limit_exceeded)는 일부러 소진으로 보지 않는다.
+	// 공식 문서가 구독 요청을 다른 결제 경로(API Key)로 자동 전환하지 말라고 하므로, 한도에 닿으면
+	// 사용자에게 오류로 알리고 장애 전환·순환도 막는다(IsNoFailoverMessage). 이 코드를 담은 오류에
+	// 다른 소진 문구가 섞여 있어도 마찬가지다.
+	if IsNoFailoverMessage(message) {
+		return false
 	}
 	// Claude 구독(claude-code): 5시간/주간 사용량 한도 소진. claudecode 가 오류 앞에 이 고정 마커를
 	// 붙인다. 시간이 지나야 풀리는 한도이므로 장애 전환 대상이다.
@@ -363,6 +365,17 @@ func IsQuotaExhaustedMessage(message string) bool {
 		!strings.Contains(message, "rate limit") &&
 		!strings.Contains(message, "too many requests")
 }
+
+// IsNoFailoverMessage reports whether an error must not make a request move to another
+// profile automatically, whatever its HTTP status. Today that is the ChatGPT plan usage
+// limit: the Sign in with ChatGPT documentation says an exhausted plan is not to be
+// silently switched to another billing path, so the error is surfaced instead.
+func IsNoFailoverMessage(message string) bool {
+	return strings.Contains(strings.ToLower(message), siwc.CodeUsageLimitExceeded)
+}
+
+// IsNoFailoverError is IsNoFailoverMessage for an error value.
+func IsNoFailoverError(err error) bool { return err != nil && IsNoFailoverMessage(err.Error()) }
 
 // quotaAwareTransport preserves Norma's normal retry behavior except for a 429
 // whose body explicitly says the account quota/balance is exhausted. Norma's
@@ -439,8 +452,9 @@ func requestBodySnapshot(req *http.Request) string {
 	return string(b)
 }
 
-// baseTransport builds the shared http.Transport: direct unless an explicit proxy
-// is configured (it never falls back to the *_PROXY environment variables).
+// baseTransport builds an http.Transport: direct unless an explicit proxy is configured
+// (it never falls back to the *_PROXY environment variables). Errors never echo the
+// proxy value — it may carry credentials (user:pass@host); see describeProxy.
 func baseTransport(proxy string) (*http.Transport, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	proxy = strings.TrimSpace(proxy)
@@ -450,17 +464,64 @@ func baseTransport(proxy string) (*http.Transport, error) {
 	}
 	proxyURL, err := url.Parse(proxy)
 	if err != nil {
-		return nil, fmt.Errorf("llm: invalid proxy %q: %w", proxy, err)
+		return nil, fmt.Errorf("llm: invalid proxy URL")
 	}
 	switch proxyURL.Scheme {
 	case "http", "https", "socks5":
 	case "":
-		return nil, fmt.Errorf("llm: proxy %q missing scheme (use http://, https:// or socks5://)", proxy)
+		return nil, fmt.Errorf("llm: proxy %s missing scheme (use http://, https:// or socks5://)", describeProxy(proxy))
 	default:
 		return nil, fmt.Errorf("llm: unsupported proxy scheme %q (use http, https or socks5)", proxyURL.Scheme)
 	}
+	if proxyURL.Host == "" {
+		return nil, fmt.Errorf("llm: proxy %s has no host", describeProxy(proxy))
+	}
 	transport.Proxy = http.ProxyURL(proxyURL)
 	return transport, nil
+}
+
+// describeProxy renders a proxy setting for logs and errors without its credentials:
+// scheme://host only. Anything that does not parse is not shown at all.
+func describeProxy(proxy string) string {
+	u, err := url.Parse(strings.TrimSpace(proxy))
+	if err != nil || u.Host == "" {
+		return "<redacted>"
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// DescribeProxy is describeProxy for other packages (server logs).
+func DescribeProxy(proxy string) string { return describeProxy(proxy) }
+
+// transports caches one http.Transport per proxy setting for the clients that
+// outlive a single call (the model catalog, the auth server), so repeated use shares
+// connections instead of building — and leaking — a transport every time.
+var transports = struct {
+	sync.Mutex
+	m map[string]*http.Transport
+}{m: map[string]*http.Transport{}}
+
+const maxCachedTransports = 16
+
+func sharedTransport(proxy string) (*http.Transport, error) {
+	key := strings.TrimSpace(proxy)
+	transports.Lock()
+	defer transports.Unlock()
+	if tr := transports.m[key]; tr != nil {
+		return tr, nil
+	}
+	tr, err := baseTransport(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(transports.m) >= maxCachedTransports { // a changing proxy setting must not accumulate idle pools
+		for k, old := range transports.m {
+			old.CloseIdleConnections()
+			delete(transports.m, k)
+		}
+	}
+	transports.m[key] = tr
+	return tr, nil
 }
 
 // ProxyHTTPClient builds a plain *http.Client that honours the same explicit-proxy
@@ -468,7 +529,7 @@ func baseTransport(proxy string) (*http.Transport, error) {
 // variables). The sign-in code uses it so auth.openai.com calls follow a profile's
 // proxy setting too.
 func ProxyHTTPClient(proxy string, timeout time.Duration) (*http.Client, error) {
-	transport, err := baseTransport(proxy)
+	transport, err := sharedTransport(proxy)
 	if err != nil {
 		return nil, err
 	}
@@ -484,10 +545,10 @@ func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) 
 }
 
 // chatGPTHTTPClient is quotaAwareHTTPClient for subscription profiles: the quota
-// layer stays outermost (raw capture, 429 → 402 for usage-limit bodies) and the
+// layer stays outermost (raw capture) and the
 // token-injecting transport sits between it and the network.
 func chatGPTHTTPClient(proxy string, src TokenSource) (*http.Client, error) {
-	transport, err := baseTransport(proxy)
+	transport, err := sharedTransport(proxy)
 	if err != nil {
 		return nil, err
 	}

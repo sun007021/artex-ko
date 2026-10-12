@@ -500,10 +500,10 @@ func (s *Server) finishChatGPTLogin(ctx context.Context, pl *chatgptLogin, raw s
 	}
 	// 코드 교환이 실패해도 발급된 클라이언트는 잃지 않는다 — 다음 로그인이 새 앱을 또 등록하지 않게.
 	if prev == nil || prev.ClientID != cb.ClientID {
-		if err := s.m.pg.SaveProfileOAuthRegistration(ctx, p.ID, cb.ClientID); err != nil {
+		// 토큰 상태의 기록 주체는 Session 하나뿐이다(서버가 DB 에 직접 쓰지 않는다).
+		if err := sess.Register(ctx, cb.ClientID); err != nil {
 			return fail(err)
 		}
-		sess.Reload()
 		if prev, err = sess.Snapshot(ctx); err != nil {
 			return fail(err)
 		}

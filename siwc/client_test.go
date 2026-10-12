@@ -356,6 +356,27 @@ func TestCompleteLoginAccountMismatch(t *testing.T) {
 	if _, err := c.CompleteLogin(context.Background(), p, cb, prev); CodeOf(err) != CodeAccountMismatch {
 		t.Fatalf("got %v", err)
 	}
+	// the other account's grant is not left alive at the issuer
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.revokes) != 1 || m.revokes[0].Get("token") != "refresh-1" || m.revokes[0].Get("client_id") != "oaiapp_new" {
+		t.Fatalf("the discarded refresh token must be revoked: %v", m.revokes)
+	}
+}
+
+func TestCompleteLoginRevokesTokensWhenIdentityFails(t *testing.T) {
+	m := newMockIssuer(t)
+	c := m.client()
+	p, cb := beginAndCallback(t, c, "")
+	m.codeHook(p, "oaiapp_new", "user-1", Scopes, map[string]any{"aud": "oaiapp_other"})
+	if _, err := c.CompleteLogin(context.Background(), p, cb, nil); CodeOf(err) != CodeInvalidIDToken {
+		t.Fatalf("got %v", err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.revokes) != 1 || m.revokes[0].Get("token") != "refresh-1" {
+		t.Fatalf("revocations: %v", m.revokes)
+	}
 }
 
 func TestExchangeErrorsAreSanitized(t *testing.T) {

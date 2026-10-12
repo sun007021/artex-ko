@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/llmauth"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/artex/siwc"
 	"github.com/Autumn-27/norma/llm"
@@ -27,16 +28,18 @@ import (
 //     채운다(만료 임박 시 갱신, 401 이면 1회 갱신 후 재시도) — chatgptTransport.
 //   - 공식 문서(models-and-inference, preview-limitations)의 요청 규칙을 요청 본문에 강제한다:
 //     store=false, stream=true, 지원되지 않는 필드(max_output_tokens, temperature 등) 제거,
-//     system 역할 입력 항목 금지.
+//     system 역할 입력 항목 금지, function 도구는 namespace 로 묶기(chatgpt_tools.go).
 //   - 응답 스트림은 response.completed 로 끝나야 성공이다. response.failed / error /
-//     response.incomplete / 도중에 끊긴 스트림은 오류로 바꿔 norma 에 전한다. 사용량 한도
-//     (subscription_sharing_usage_limit_exceeded)는 오류 메시지에 코드가 남아 기존 quota 장애
-//     전환(IsQuotaExhaustedMessage)으로 이어진다.
+//     response.incomplete / 도중에 끊긴 스트림은 오류로 바꿔 norma 에 전한다.
+//   - 사용량 한도(subscription_sharing_usage_limit_exceeded)는 오류 문구에 코드를 남기고 사용자에게 한도
+//     도달을 알리는 안내를 붙인다. 공식 문서가 구독 요청을 다른 결제 경로로 자동 전환하지 말라고 하므로
+//     API Key 프로필로의 자동 장애 전환(IsQuotaExhaustedMessage, LLM 순환)의 대상이 아니다
+//     (IsNoFailoverMessage 가 순환도 막는다).
 //
 // 자격 증명이 api.openai.com/v1/responses 이외의 곳으로 나가는 일은 전송 계층이 거부한다.
 
-// AuthModeChatGPT 는 db.AuthModeChatGPT 와 같은 값이다(agent 는 db 를 import 하지 않는다).
-const AuthModeChatGPT = "chatgpt"
+// AuthModeChatGPT 는 db.AuthModeChatGPT 와 같은 값이다(둘 다 llmauth.ModeChatGPT 의 별칭).
+const AuthModeChatGPT = llmauth.ModeChatGPT
 
 // ChatGPTBaseURL 은 구독 토큰으로 호출하는 유일한 API 베이스다. 프로필의 base_url 은 무시한다.
 const ChatGPTBaseURL = siwc.Resource
@@ -79,7 +82,8 @@ var chatGPTUnsupportedFields = []string{
 	"top_logprobs", "top_p", "truncation", "user", "previous_response_id",
 }
 
-// sanitizeChatGPTRequest 는 norma 가 만든 Responses 요청 본문을 구독 경로 규칙에 맞춘다.
+// sanitizeChatGPTRequest 는 norma 가 만든 Responses 요청 본문을 구독 경로 규칙에 맞춘다
+// (unsupported 필드 제거, store/stream 고정, system→developer, function 도구 namespace 화).
 // wantStream 은 호출자가 원래 스트리밍을 요청했는지다(false 면 응답을 JSON 으로 모아 돌려준다).
 func sanitizeChatGPTRequest(body []byte) (out []byte, wantStream bool, err error) {
 	var m map[string]json.RawMessage
@@ -92,23 +96,26 @@ func sanitizeChatGPTRequest(body []byte) (out []byte, wantStream bool, err error
 	}
 	m["store"] = json.RawMessage("false")
 	m["stream"] = json.RawMessage("true")
-	// 명시적 system 역할 입력은 거부된다 — 지침은 instructions 로 가야 하며, 혹시 남아 있으면
-	// 같은 의미의 developer 역할로 바꾼다.
-	if raw, ok := m["input"]; ok {
-		var items []map[string]json.RawMessage
-		if json.Unmarshal(raw, &items) == nil {
-			changed := false
-			for _, it := range items {
-				if string(it["role"]) == `"system"` {
-					it["role"] = json.RawMessage(`"developer"`)
-					changed = true
-				}
-			}
-			if changed {
-				if nb, err := json.Marshal(items); err == nil {
-					m["input"] = nb
-				}
-			}
+	// 입력 항목 정리: 명시적 system 역할 입력은 거부된다 — 지침은 instructions 로 가야 하며, 혹시 남아 있으면
+	// 같은 의미의 developer 역할로 바꾼다. function_call 이력에는 도구가 속한 namespace 를 붙인다.
+	var items []map[string]json.RawMessage
+	haveItems := false
+	if raw, ok := m["input"]; ok && json.Unmarshal(raw, &items) == nil {
+		haveItems = true
+	}
+	changed := false
+	for _, it := range items {
+		if string(it["role"]) == `"system"` {
+			it["role"] = json.RawMessage(`"developer"`)
+			changed = true
+		}
+	}
+	if groupChatGPTTools(m, items) {
+		changed = true
+	}
+	if haveItems && changed {
+		if nb, err := json.Marshal(items); err == nil {
+			m["input"] = nb
 		}
 	}
 	out, err = json.Marshal(m)
@@ -127,6 +134,7 @@ func (t *chatgptTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if dest != t.endpoint || req.Method != http.MethodPost {
 		// 구독 자격 증명은 정해진 Responses 엔드포인트 이외로는 절대 보내지 않는다
 		// (리다이렉트로 다른 호스트에 닿는 경우도 같은 검사에 걸린다).
+		closeRequestBody(req)
 		return nil, fmt.Errorf("chatgpt: refusing to send plan credentials to %s", req.URL.Host)
 	}
 	raw, err := readRequestBody(req)
@@ -158,17 +166,24 @@ func (t *chatgptTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	resp, err := send(tok)
 	if err == nil && resp.StatusCode == http.StatusUnauthorized {
-		// 토큰이 거부됐다(폐기·서버측 만료). 한 번만 갱신해 재시도한다.
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		_ = resp.Body.Close()
+		// 토큰이 거부됐다(폐기·서버측 만료). 세션이 새 토큰을 내주면 한 번만 재시도한다. 방금 발급한
+		// 토큰이 거부된 것이면(계정·워크스페이스·권한 문제) 세션은 같은 토큰을 돌려주고, 그때는 같은
+		// 요청을 되풀이하지 않고 서버가 준 401 응답을 그대로 전한다.
 		tok2, terr := t.src.Token(ctx, tok)
-		if terr != nil {
+		switch {
+		case terr != nil:
+			discardBody(resp)
 			return tokenErrorResponse(req, terr)
+		case tok2 != tok:
+			discardBody(resp)
+			resp, err = send(tok2)
 		}
-		resp, err = send(tok2)
 	}
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		resp = usageLimitResponse(req, resp)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return resp, nil // 오류 본문(코드 포함)은 norma 가 그대로 오류 문자열에 담는다
@@ -180,7 +195,46 @@ func (t *chatgptTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return aggregateStream(req, resp), nil
 }
 
+func discardBody(resp *http.Response) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	_ = resp.Body.Close()
+}
+
+func closeRequestBody(req *http.Request) {
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+}
+
+// usageLimitResponse: 429 본문이 사용량 한도(subscription_sharing_usage_limit_exceeded)이면 402 로 바꾸고
+// 사용자 안내를 덧붙인다. norma 는 429 를 일시적 한도로 보고 몇 번 재시도하지만, 이 한도는 사용자가
+// ChatGPT 설정에서 풀기 전까지 계속되므로 재시도는 무의미하다. 한도 오류는 다른 결제 경로(API Key)로
+// 자동 전환하지 않는다(IsNoFailoverMessage).
+func usageLimitResponse(req *http.Request, resp *http.Response) *http.Response {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	_ = resp.Body.Close()
+	if err == nil && siwc.IsUsageLimit(siwc.ParseAPIError(resp.StatusCode, body, "").Code) {
+		return synthResponse(req, http.StatusPaymentRequired, siwc.CodeUsageLimitExceeded,
+			usageLimitMessage(siwc.ParseAPIError(resp.StatusCode, body, resp.Header.Get("x-request-id")).RequestID))
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	return resp
+}
+
+// chatGPTUsageLimitHint 는 사용량 한도 오류에 붙는 사용자 안내다.
+const chatGPTUsageLimitHint = "ChatGPT 플랜(또는 이 앱)의 사용량 한도에 도달했습니다. ChatGPT 설정의 Usage 에서 한도를 확인하세요. " +
+	"ARTEX 는 요청을 다른 결제 경로(API Key)로 자동 전환하지 않습니다"
+
+func usageLimitMessage(requestID string) string {
+	if requestID != "" {
+		return chatGPTUsageLimitHint + " (request_id=" + requestID + ")"
+	}
+	return chatGPTUsageLimitHint
+}
+
 func readRequestBody(req *http.Request) ([]byte, error) {
+	defer closeRequestBody(req)
 	if req.GetBody != nil {
 		rc, err := req.GetBody()
 		if err != nil {
@@ -192,13 +246,18 @@ func readRequestBody(req *http.Request) ([]byte, error) {
 	if req.Body == nil {
 		return nil, fmt.Errorf("chatgpt: empty request body")
 	}
-	defer req.Body.Close()
 	return io.ReadAll(req.Body)
 }
 
-// tokenErrorResponse 는 토큰을 못 얻은 실패를 HTTP 응답으로 바꿔 준다. 전송 오류로 돌려주면
-// norma 가 매번 3회 재시도(수 초 대기)하므로, 재시도가 무의미한 경우(재로그인 필요 등)는 401,
-// 일시적 장애는 503 으로 합성한다. 401 은 장애 전환 체인이 곧바로 다음 프로필로 넘어가는 신호다.
+// tokenErrorResponse 는 토큰을 못 얻은 실패를 HTTP 응답으로 바꿔 준다. 전송 오류로 돌려주면 norma 가
+// 같은 요청을 연결 오류로 재시도하므로 상태 코드로 의미를 나눠 합성한다:
+//   - 재시도가 무의미한 실패(재로그인 필요, 연결 안 됨, 권한 없음, 등록 거부)는 401. norma 는 401 을
+//     재시도하지 않고 곧바로 오류로 올린다. LLM 순환(llmpool)이 켜져 있으면 401 은 "이 설정은 고쳐질 때까지
+//     실패"하는 하드 실패로 보고 다음 설정으로 넘어가지만, 작업의 LLM 체인과 할당량 소진 전환
+//     (IsQuotaExhaustedMessage)은 401 로는 움직이지 않는다.
+//   - 일시적 장애(인증 서버 연결 실패, 갱신 대기 중 등)는 503. norma 가 자체 백오프로 몇 번 재시도하고
+//     (세션도 갱신 실패 뒤 백오프를 두므로 그 사이 인증 서버를 두드리지 않는다), 그래도 안 되면 순환이
+//     켜진 경우에 한해 일시 실패로 다음 설정을 시도한다.
 func tokenErrorResponse(req *http.Request, err error) (*http.Response, error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || req.Context().Err() != nil {
 		return nil, err
@@ -211,7 +270,9 @@ func tokenErrorResponse(req *http.Request, err error) (*http.Response, error) {
 	case siwc.CodeNotConnected:
 		status, msg = http.StatusUnauthorized, "ChatGPT 계정이 연결되어 있지 않습니다. LLM 설정에서 ChatGPT로 로그인해 주세요"
 	case siwc.CodePlanUsageDisabled:
-		status, msg = http.StatusUnauthorized, "ChatGPT 플랜 사용 권한(chatgpt.tokens.use.direct)이 허가되지 않았습니다. LLM 설정에서 다시 로그인해 권한을 허용해 주세요"
+		status, msg = http.StatusUnauthorized, "ChatGPT 플랜 사용 권한("+llmauth.ScopePlanUsage+")이 허가되지 않았습니다. LLM 설정에서 다시 로그인해 권한을 허용해 주세요"
+	case siwc.CodeInvalidClient:
+		status, msg = http.StatusUnauthorized, "ChatGPT 가 이 앱 등록을 더는 받아들이지 않습니다. LLM 설정에서 다시 로그인해 앱을 새로 등록해 주세요"
 	case "":
 		code = "chatgpt_token_unavailable"
 	}
@@ -321,11 +382,14 @@ func inspectEvent(event string, data []byte) eventInfo {
 }
 
 // failMessage 는 "<code>: <message>" 를 만든다. norma 는 오류 이벤트에서 message 만 읽으므로
-// 코드를 메시지 앞에 붙여야 subscription_sharing_usage_limit_exceeded 같은 코드가 오류
-// 문자열(과 IsQuotaExhaustedMessage)까지 전달된다.
+// 코드를 메시지 앞에 붙여야 subscription_sharing_usage_limit_exceeded 같은 코드가 오류 문자열
+// (과 IsNoFailoverMessage)까지 전달된다. 사용량 한도는 원문 대신 사용자 안내를 싣는다.
 func failMessage(code, msg string) string {
 	if code == "" {
 		code = "unknown_error"
+	}
+	if siwc.IsUsageLimit(code) {
+		msg = chatGPTUsageLimitHint
 	}
 	s := code
 	if msg = strings.TrimSpace(msg); msg != "" {
@@ -423,8 +487,29 @@ func (g *responsesGuard) process(block [][]byte) {
 		g.terminal = true // 오류 이벤트가 종료다. 뒤따르는 EOF 를 또 오류로 만들지 않는다
 		g.out.Write(errorEventBlock(info.failMsg))
 	default:
+		// 도구 호출 이름에 namespace 접두사가 붙어 오면 ARTEX 도구 이름으로 되돌린다.
+		if nd, ok := plainEventTools(data); ok {
+			block = replaceData(block, nd)
+		}
 		writeBlock(&g.out, block)
 	}
+}
+
+// replaceData swaps the data lines of an SSE block for a single data line carrying nd.
+func replaceData(block [][]byte, nd []byte) [][]byte {
+	out := make([][]byte, 0, len(block))
+	done := false
+	for _, l := range block {
+		if bytes.HasPrefix(l, []byte("data:")) {
+			if !done {
+				out = append(out, append([]byte("data: "), nd...))
+				done = true
+			}
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 func writeBlock(w *bytes.Buffer, block [][]byte) {
@@ -467,6 +552,9 @@ func aggregateStream(req *http.Request, resp *http.Response) *http.Response {
 	defer resp.Body.Close()
 	col := newSSECollector(resp.Body)
 	respObj, failMsg := col.collect()
+	if failMsg == "" {
+		respObj, _ = plainResponseTools(respObj)
+	}
 	status := http.StatusOK
 	var payload []byte
 	switch {
@@ -549,7 +637,7 @@ var ErrChatGPTModelCatalog = errors.New("chatgpt: unexpected model catalog")
 // visibility == "list" 인 항목만 서버 순서대로 돌려준다(slug 를 model 로, display_name 을 UI 에).
 // 계정을 바꾸면 목록을 다시 불러와야 한다.
 func FetchChatGPTModels(ctx context.Context, proxy string, src TokenSource) ([]ChatGPTModel, error) {
-	tr, err := baseTransport(proxy)
+	tr, err := sharedTransport(proxy)
 	if err != nil {
 		return nil, err
 	}
@@ -580,11 +668,14 @@ func fetchChatGPTModels(ctx context.Context, hc *http.Client, url string, src To
 	}
 	resp, body, err := get(tok)
 	if err == nil && resp.StatusCode == http.StatusUnauthorized {
+		// 세션이 새 토큰을 내줄 때만 다시 시도한다(방금 발급한 토큰의 401 은 토큰 문제가 아니다).
 		tok2, terr := src.Token(ctx, tok)
 		if terr != nil {
 			return nil, terr
 		}
-		resp, body, err = get(tok2)
+		if tok2 != tok {
+			resp, body, err = get(tok2)
+		}
 	}
 	if err != nil {
 		return nil, err

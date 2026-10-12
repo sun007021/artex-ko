@@ -195,8 +195,18 @@ func TestChatGPTStreamEndToEnd(t *testing.T) {
 	if r, _ := body["reasoning"].(map[string]any); r["effort"] != "high" {
 		t.Fatalf("reasoning effort must still be sent: %v", body["reasoning"])
 	}
-	if tl, _ := body["tools"].([]any); len(tl) != 1 {
-		t.Fatalf("function tools must be sent unchanged: %v", body["tools"])
+	// function tools travel inside one namespace (preview-limitations: "Group function/custom tools in
+	// namespaces or supply them through additional_tools input items"), never as top-level functions.
+	tl, _ := body["tools"].([]any)
+	if len(tl) != 1 {
+		t.Fatalf("tools: %v", body["tools"])
+	}
+	ns, _ := tl[0].(map[string]any)
+	inner, _ := ns["tools"].([]any)
+	first, _ := inner[0].(map[string]any)
+	if ns["type"] != "namespace" || ns["name"] != chatGPTToolNamespace || ns["description"] == "" || len(inner) != 1 ||
+		first["type"] != "function" || first["name"] != "run_cmd" {
+		t.Fatalf("namespace shape: %v", ns)
 	}
 }
 
@@ -261,10 +271,10 @@ func TestChatGPTFailedAndIncompleteEvents(t *testing.T) {
 		want  string // substring of the error
 		quota bool
 	}{
-		{"usage limit", `{"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"A sharing limit was reached"}}}`, "subscription_sharing_usage_limit_exceeded", true},
+		{"usage limit", `{"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"A sharing limit was reached"}}}`, "subscription_sharing_usage_limit_exceeded", false},
 		{"usage unavailable", `{"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_unavailable","message":"try later"}}}`, "subscription_sharing_usage_unavailable", false},
 		{"failed without error", `{"type":"response.failed","response":{}}`, "unknown_error", false},
-		{"error event", `{"type":"error","code":"subscription_sharing_usage_limit_exceeded","message":"limit"}`, "subscription_sharing_usage_limit_exceeded", true},
+		{"error event", `{"type":"error","code":"subscription_sharing_usage_limit_exceeded","message":"limit"}`, "subscription_sharing_usage_limit_exceeded", false},
 		{"nested error event", `{"type":"error","error":{"code":"server_error","message":"boom"}}`, "server_error: boom", false},
 		{"incomplete other", `{"type":"response.incomplete","response":{"incomplete_details":{"reason":"content_filter"}}}`, "response_incomplete: content_filter", false},
 	}
@@ -278,6 +288,9 @@ func TestChatGPTFailedAndIncompleteEvents(t *testing.T) {
 			}
 			if IsQuotaExhaustedMessage(err.Error()) != tc.quota {
 				t.Fatalf("quota classification of %q = %v", err, !tc.quota)
+			}
+			if IsNoFailoverError(err) != strings.Contains(tc.want, "usage_limit_exceeded") {
+				t.Fatalf("no-failover classification of %q", err)
 			}
 		})
 	}
@@ -294,22 +307,39 @@ func TestChatGPTIncompleteMaxOutputIsMaxTokensStop(t *testing.T) {
 	}
 }
 
-func TestChatGPTUsageLimit429FailsOverWithoutRetry(t *testing.T) {
+// An exhausted plan is surfaced, not moved to another billing path (the documentation says OpenAI does not
+// silently switch, and neither must the app): no retries, a clear message, and neither quota rotation nor
+// the failover pool may act on it.
+func TestChatGPTUsageLimit429IsSurfacedWithoutRetryOrFailover(t *testing.T) {
 	t.Parallel()
 	rs := newResponsesServer(t, func(_ int, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-request-id", "req_123")
 		w.WriteHeader(429)
 		_, _ = w.Write([]byte(`{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"limit"}}`))
 	})
 	start := time.Now()
 	_, _, _, _, err := collect(t, rs.provider(t, &fakeSource{tok: "t"}, 3), baseReq())
-	if err == nil || !IsQuotaExhaustedMessage(err.Error()) {
-		t.Fatalf("usage-limit 429 must classify as quota exhaustion: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "subscription_sharing_usage_limit_exceeded") {
+		t.Fatalf("the limit must reach the caller with its code: %v", err)
+	}
+	if IsQuotaExhaustedMessage(err.Error()) || !IsNoFailoverError(err) {
+		t.Fatalf("usage limit must not be failover-eligible: %v", err)
 	}
 	if rs.hits.Load() != 1 || time.Since(start) > 2*time.Second {
 		t.Fatalf("429 usage limit must not be retried (hits=%d, %v)", rs.hits.Load(), time.Since(start))
 	}
-	if !strings.Contains(err.Error(), "status 402") {
-		t.Fatalf("should be normalized to 402 like other quota errors: %v", err)
+	for _, want := range []string{"status 402", "Usage", "자동 전환하지 않습니다", "req_123"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("missing %q in %v", want, err)
+		}
+	}
+	// other 429s are untouched (norma retries them as before)
+	rs2 := newResponsesServer(t, func(_ int, w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(429)
+		_, _ = w.Write([]byte(`{"error":{"code":"rate_limit_exceeded"}}`))
+	})
+	if _, _, _, _, err := collect(t, rs2.provider(t, &fakeSource{tok: "t"}, 0), baseReq()); err == nil || !strings.Contains(err.Error(), "status 429") {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -374,7 +404,7 @@ func TestChatGPTCompleteAggregatesTheStream(t *testing.T) {
 		sse(w, `{"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"x"}}}`)
 	})
 	_, _, _, err = rs2.provider(t, &fakeSource{tok: "t"}, 0).Complete(context.Background(), baseReq())
-	if err == nil || !IsQuotaExhaustedMessage(err.Error()) {
+	if err == nil || IsQuotaExhaustedMessage(err.Error()) || !IsNoFailoverError(err) || !strings.Contains(err.Error(), "subscription_sharing_usage_limit_exceeded") {
 		t.Fatalf("got %v", err)
 	}
 	rs3 := newResponsesServer(t, func(_ int, w http.ResponseWriter, r *http.Request) { sse(w, evTextDelta) })
@@ -532,13 +562,18 @@ func TestFetchChatGPTModels(t *testing.T) {
 
 func TestIsQuotaExhaustedMessageChatGPTUsageLimit(t *testing.T) {
 	t.Parallel()
+	// The usage limit is explicitly NOT quota exhaustion: no automatic move to another billing path.
 	for _, m := range []string{
 		`openai-responses: subscription_sharing_usage_limit_exceeded: A ChatGPT sharing limit has been reached`,
 		`openai-responses: status 402: {"error":{"code":"subscription_sharing_usage_limit_exceeded"}}`,
-		`SUBSCRIPTION_SHARING_USAGE_LIMIT_EXCEEDED rate limit`, // wins over the transient-limit exclusions
+		`SUBSCRIPTION_SHARING_USAGE_LIMIT_EXCEEDED rate limit`,
+		`subscription_sharing_usage_limit_exceeded: insufficient_quota`, // even next to a real quota marker
 	} {
-		if !IsQuotaExhaustedMessage(m) {
-			t.Errorf("should be quota: %q", m)
+		if IsQuotaExhaustedMessage(m) {
+			t.Errorf("must not be quota: %q", m)
+		}
+		if !IsNoFailoverMessage(m) {
+			t.Errorf("must veto failover: %q", m)
 		}
 	}
 	for _, m := range []string{
@@ -546,8 +581,12 @@ func TestIsQuotaExhaustedMessageChatGPTUsageLimit(t *testing.T) {
 		`subscription_sharing_user_not_eligible`,
 		`status 429: too many requests`,
 	} {
-		if IsQuotaExhaustedMessage(m) {
-			t.Errorf("must not be quota: %q", m)
+		if IsQuotaExhaustedMessage(m) || IsNoFailoverMessage(m) {
+			t.Errorf("unexpected classification: %q", m)
 		}
+	}
+	// existing API-key behaviour is unchanged
+	if !IsQuotaExhaustedMessage(`status 402: insufficient_quota`) {
+		t.Error("API-key quota exhaustion must still rotate")
 	}
 }

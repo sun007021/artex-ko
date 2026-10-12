@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/Autumn-27/artex/llmauth"
 )
 
 // ---------- ChatGPT 구독(Sign in with ChatGPT) OAuth 자격 증명 ----------
@@ -15,9 +17,9 @@ import (
 
 // OAuth 연결 상태.
 const (
-	OAuthStatusDisconnected = "disconnected"    // 토큰 없음(로그아웃 또는 등록만 끝난 상태)
-	OAuthStatusConnected    = "connected"       // 토큰 보유
-	OAuthStatusReauthNeeded = "reauth_required" // 갱신 불가 — 다시 로그인해야 함
+	OAuthStatusDisconnected = llmauth.StatusDisconnected // 토큰 없음(로그아웃 또는 등록만 끝난 상태)
+	OAuthStatusConnected    = llmauth.StatusConnected    // 토큰 보유
+	OAuthStatusReauthNeeded = llmauth.StatusReauth       // 갱신 불가 — 다시 로그인해야 함
 
 	oauthSettingHostIDKey  = "siwc_host_id"
 	oauthLastErrorMaxRunes = 300
@@ -155,7 +157,7 @@ func (d *DB) ListProfileOAuthStatuses(ctx context.Context) (map[int64]ProfileOAu
 			st.ExpiresAt = &t
 		}
 		st.Scopes = strings.Fields(scopes)
-		st.PlanUsageOK = hasScope(st.Scopes, "chatgpt.tokens.use.direct")
+		st.PlanUsageOK = llmauth.HasScope(st.Scopes, llmauth.ScopePlanUsage)
 		if st.Status == OAuthStatusConnected && !hasRefresh {
 			st.Status = OAuthStatusDisconnected
 		}
@@ -178,15 +180,6 @@ func (d *DB) EnsureLLMOAuthHostID(gen func() string) (string, error) {
 	}
 	v, _, err := d.GetSetting(oauthSettingHostIDKey)
 	return v, err
-}
-
-func hasScope(scopes []string, want string) bool {
-	for _, s := range scopes {
-		if s == want {
-			return true
-		}
-	}
-	return false
 }
 
 func truncateRunes(s string, n int) string {

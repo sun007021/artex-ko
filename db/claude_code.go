@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/Autumn-27/artex/llmauth"
 )
 
 // claude-code 인증 방식(공식 claude CLI 헤드리스 구동)의 설치 단위 설정. 프로필별 값(모델·추론
@@ -17,8 +19,8 @@ const (
 	// ClaudeCodeDefaultConcurrent 는 동시에 모델 응답을 만드는 claude 프로세스 수의 기본 상한,
 	// ClaudeCodeMaxConcurrentHard 는 설정으로도 넘을 수 없는 하드 상한이다. 구독 한도는
 	// "ordinary, individual usage" 를 전제로 하므로 작게 묶는다.
-	ClaudeCodeDefaultConcurrent = 1
-	ClaudeCodeMaxConcurrentHard = 3
+	ClaudeCodeDefaultConcurrent = llmauth.ClaudeCodeDefaultConcurrent
+	ClaudeCodeMaxConcurrentHard = llmauth.ClaudeCodeHardConcurrent
 )
 
 // ClaudeCodeSettings 는 claude-code 인증 방식의 설치 단위 설정이다.
@@ -33,15 +35,7 @@ type ClaudeCodeSettings struct {
 }
 
 // ClampClaudeCodeConcurrent 는 동시 실행 상한을 [1, 하드 상한] 으로 맞춘다(0 이하 = 기본값).
-func ClampClaudeCodeConcurrent(n int) int {
-	if n <= 0 {
-		return ClaudeCodeDefaultConcurrent
-	}
-	if n > ClaudeCodeMaxConcurrentHard {
-		return ClaudeCodeMaxConcurrentHard
-	}
-	return n
-}
+func ClampClaudeCodeConcurrent(n int) int { return llmauth.ClampClaudeCodeConcurrent(n) }
 
 // ValidateClaudeCodeBinary 는 바이너리 경로 설정을 검사한다. 빈 값(= PATH 의 "claude")이거나,
 // 줄바꿈·NUL 이 없는 값이어야 한다. 셸을 거치지 않고 exec 로만 실행되므로 인용은 필요 없다.
