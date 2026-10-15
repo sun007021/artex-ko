@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/claudecode"
 	"github.com/Autumn-27/artex/config"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
@@ -142,6 +143,15 @@ type Server struct {
 	llmOn     bool
 	llmProf   string // active LLM profile name (for llmrec tagging)
 
+	// ChatGPT 구독(Sign in with ChatGPT) 로그인 상태, 서버가 듣는 포트(리디렉션 URI 기본값),
+	// 그리고 로그인/로그아웃 뒤 캐시를 다시 만드는 동작의 테스트용 대체 훅. chatgpt.go 참고.
+	cgpt            chatgptRuntime
+	claudeOnce      sync.Once
+	claude          *claudecode.Manager // claude-code 인증 방식의 실행 환경(슬롯·한도 게이트·세션 표). claudeManager() 로 쓴다
+	listenPort      int
+	listenAddr      string // SetListenAddr 로 알린 바인딩 주소(claude-code 의 loopback 조건 판정용)
+	afterAuthChange func()
+
 	// chatBusy guards the per-task main-agent run: the chat handler launches the
 	// agent on the server's background ctx (not the request ctx) and returns
 	// immediately, so a page reload / proxy timeout can't abort a live run. This
@@ -239,6 +249,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// First-run protection: cache the password hash and, while none is set, issue
 	// the console setup token (or apply ARTEX_ADMIN_PASSWORD) before any request.
 	s.bootstrapAuth()
+	s.cleanClaudeCodeWorkDir()
+	s.applyClaudeCodeSettings()
 	s.initSideQuestions()
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
 	// 之后每次保存策略再推一次（saveLLMRetryPolicy）。
@@ -435,16 +447,8 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	if err != nil || p == nil {
 		return agent.Config{}, false
 	}
-	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
-	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
-	cfg.ContextWindowK = p.ContextWindowK
-	cfg.ThinkingType = p.ThinkingType
-	cfg.ReasoningEffort = p.ReasoningEffort
-	cfg.Stream = p.Streaming
-	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
-	cfg.SessionHeaderKey = p.SessionHeaderKey
-	s.applyProfileRetry(&cfg, p)
-	if cfg.APIKey == "" {
+	cfg, ready := s.profileAgentConfig(p)
+	if !ready {
 		return cfg, false
 	}
 	s.cfgMu.Lock()
@@ -469,9 +473,13 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	var maxTokensField string
 	var sessionHeaderKey string
 	var retry db.RetryOverride
+	var prevChatGPT *db.LLMProfile // 기존 default 가 ChatGPT 구독이었다면 API Key 로 덮어쓰며 자격 증명을 폐기한다
 	if profs, _ := s.m.pg.ListProfiles(); profs != nil {
 		for _, p := range profs {
 			if p.Name == "default" {
+				if p.AuthMode == db.AuthModeChatGPT {
+					prevChatGPT = p
+				}
 				id, priority, poolExclude, streaming = p.ID, p.Priority, p.PoolExclude, p.Streaming
 				maxTokens, maxTokensField = p.MaxTokens, p.MaxTokensField
 				sessionHeaderKey = p.SessionHeaderKey
@@ -490,6 +498,9 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	})
 	if err != nil {
 		return err
+	}
+	if prevChatGPT != nil {
+		s.dropChatGPTCredentials(context.Background(), prevChatGPT)
 	}
 	return s.m.pg.SetActiveProfile(newID)
 }
@@ -606,19 +617,7 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	if err != nil || p == nil {
 		return agent.Config{}, false
 	}
-	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
-	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
-	cfg.ContextWindowK = p.ContextWindowK
-	cfg.ThinkingType = p.ThinkingType
-	cfg.ReasoningEffort = p.ReasoningEffort
-	cfg.Stream = p.Streaming
-	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
-	cfg.SessionHeaderKey = p.SessionHeaderKey
-	s.applyProfileRetry(&cfg, p)
-	if cfg.APIKey == "" {
-		return cfg, false
-	}
-	return cfg, true
+	return s.profileAgentConfig(p)
 }
 
 // effectiveProfileForAgent resolves the LLM profile id an agent should run on, by
@@ -1014,6 +1013,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/llm/pool", s.pgLLMPoolStatus)
 	mux.HandleFunc("POST /api/llm/pool/reset", s.pgLLMPoolReset)
 	mux.HandleFunc("POST /api/llm/models", s.pgListModels)
+	// ChatGPT 구독(Sign in with ChatGPT) — 모두 JWT 보호. 콜백(/auth/callback)만 아래 root 에 따로 있다.
+	mux.HandleFunc("POST /api/llm/chatgpt/login/start", s.chatgptLoginStart)
+	mux.HandleFunc("POST /api/llm/chatgpt/login/complete", s.chatgptLoginComplete)
+	mux.HandleFunc("GET /api/llm/chatgpt/status", s.chatgptStatus)
+	mux.HandleFunc("POST /api/llm/chatgpt/logout", s.chatgptLogout)
+	mux.HandleFunc("GET /api/llm/chatgpt/models", s.chatgptModels)
+	// claude-code(공식 claude CLI, 사용자가 직접 로그인한 구독) — 설치 단위 옵트인과 로그인 상태 조회. JWT 보호.
+	mux.HandleFunc("GET /api/llm/claude-code/settings", s.claudeCodeGetSettings)
+	mux.HandleFunc("PUT /api/llm/claude-code/settings", s.claudeCodePutSettings)
+	mux.HandleFunc("GET /api/llm/claude-code/status", s.claudeCodeStatus)
 
 	// 拦截规则管理
 	mux.HandleFunc("GET /api/intercept/rules", s.interceptListRules)
@@ -1047,6 +1056,10 @@ func (s *Server) Handler() http.Handler {
 	api := cors(s.requireAuth(mux))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
+	// OpenAI 가 로그인 뒤 브라우저를 되돌려 보내는 주소. 세션 쿠키가 없을 수 있어 JWT 대신
+	// 일회용 256비트 state 로 보호한다(chatgpt.go).
+	root.HandleFunc("GET /auth/callback", s.chatgptCallback)
+	root.HandleFunc("GET /auth/start", s.chatgptStart)
 	root.Handle("/", s.webuiHandler())
 	return root
 }
@@ -1403,7 +1416,8 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 		"model":            s.llmCfg.Model,
 		"base_url":         s.llmCfg.BaseURL,
 		"proxy":            s.llmCfg.Proxy,
-		"key_set":          s.llmCfg.APIKey != "",
+		"key_set":          s.llmCfg.APIKey != "" || s.llmCfg.UsesChatGPT() || s.llmCfg.UsesClaudeCode(),
+		"auth_mode":        s.llmCfg.AuthMode,
 		"rate_per_second":  s.llmCfg.RatePerSecond,
 		"rate_per_minute":  s.llmCfg.RatePerMinute,
 		"context_window_k": s.llmCfg.ContextWindowK,
@@ -1484,9 +1498,18 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		ProfileID        *int64 `json:"profile_id"`         // 测已存 profile 时传入：api_key 为空则用它存的 key
 		Streaming        *bool  `json:"streaming"`          // 省略=流式，与保存 profile 时同一套默认
 		SessionHeaderKey string `json:"session_header_key"` // 非空=测试时也带该自定义会话头，值为一次性随机 session id
+		AuthMode         string `json:"auth_mode"`          // "chatgpt"=저장된 ChatGPT 구독 프로필(profile_id 필수)로 테스트, "claude-code"=claude CLI 로 테스트
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
+		return
+	}
+	if req.AuthMode == db.AuthModeChatGPT {
+		s.testChatGPT(w, r, req.ProfileID, req.Model, req.ThinkingType, req.ReasoningEffort)
+		return
+	}
+	if req.AuthMode == db.AuthModeClaudeCode {
+		s.testClaudeCode(w, r, req.ProfileID, req.Model, req.ReasoningEffort, req.Proxy)
 		return
 	}
 	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)

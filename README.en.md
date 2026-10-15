@@ -138,13 +138,95 @@ Upstream provides several methods: an install script (`./install.sh`), precompil
 }
 ```
 
-**LLM:** `export ANTHROPIC_API_KEY=sk-...` (or `OPENAI_API_KEY`), or enter it on the UI's "LLM settings" page. Optional environment variables: `ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`. To use a domestic or open model, point `ARTEX_LLM_BASE_URL` at an OpenAI-compatible endpoint.
+**LLM:** `export ANTHROPIC_API_KEY=sk-...` (or `OPENAI_API_KEY`), or enter it on the UI's "LLM settings" page. Instead of an API key you can also sign in with a ChatGPT Plus/Pro subscription ([see below](#using-a-chatgpt-subscription-no-api-key)), and — for personal use on your own PC only — use a Claude subscription through the official `claude` CLI that you signed in to yourself ([see below](#using-a-claude-subscription-official-claude-cli-personal-local-use-only)). Optional environment variables: `ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`. To use a domestic or open model, point `ARTEX_LLM_BASE_URL` at an OpenAI-compatible endpoint.
 
 **Output language:** this edition forces user-facing output into Korean via a small, code-fixed directive appended to each role's system prompt (it does not translate the reasoning body). If you need a different output language, adapt that directive in `agent/prompt.go` (`langDirective`).
 
 **Concurrency:** the number of worker agents spawned per task is adjustable under "System settings" (default 3).
 
 **Common flags:** `./start.sh -addr :8787 -proxy :8788` — `-addr` is the frontend and API, `-proxy` is the traffic-recording proxy port. `-addr` defaults to `127.0.0.1:8787` (local connections only); pass an explicit bind address such as `:8787` to serve other machines (see "First-run protection" below).
+
+### Using a ChatGPT subscription (no API key)
+
+You can run models on the usage of a ChatGPT Plus/Pro subscription. This uses OpenAI's official "Sign in with ChatGPT" token-sharing path for open-source and locally run apps; instead of API-key billing, the plan limits of that ChatGPT account apply. Only authentication changes. The agent loop and tool calling keep using the existing `openai-responses` path (Responses API, `store:false`), so with the same model it behaves the same as with an API key.
+
+**How to use it**
+
+1. Under "System → LLM", click "New" and set **Authentication** to "ChatGPT subscription (Plus/Pro)".
+2. Enter a name and a model, then click **"Sign in with ChatGPT"**. The profile is saved first and OpenAI's sign-in and consent page opens in a new tab. After you approve, the browser returns to `http://127.0.0.1:<port>/auth/callback` and ARTEX finishes the connection automatically (`<port>` is the port you reached ARTEX on; 8787 by default). The consent must include permission to use your ChatGPT plan usage. If it was not granted, the card shows "Permission needed" and "Allow permission again" signs you in again.
+3. Once signed in, the refresh button next to the model field loads **the models this account can use** (you can still type a model that is not listed). Pick a reasoning effort (`reasoning.effort`), run "Test connection" to confirm a real call, and save.
+4. Set the profile active on its card, or assign it to tasks and agents. Signing out asks OpenAI to revoke the refresh token and deletes the tokens on this server.
+
+**When the browser is on a different computer than the ARTEX server (remote server / Docker)**
+
+OpenAI's redirect address must be `http://127.0.0.1:<port>/auth/callback` (only the port may vary), so it returns automatically only when the browser runs on the same host as ARTEX. With Docker, port 8787 is published on the host, so a browser on that host works automatically. If the browser is on another computer, it is normal for the `127.0.0.1` page not to load after you approve. Then **copy the full URL from the address bar** and paste it into the "Finish by pasting" box in the sign-in area to complete the same sign-in (the code is single-use and must be used within 10 minutes).
+
+**Usage limits and failover**
+
+You can set a weekly per-app limit under "Usage" in ChatGPT settings. When it is reached the error `subscription_sharing_usage_limit_exceeded` is returned. The OpenAI documentation says a subscription request must not be switched to another billing path automatically, so ARTEX does not treat this like an exhausted balance or quota on an API key: even with "LLM rotation" enabled it does **not** fail over to a paid API-key profile. It surfaces the error with a note that the limit was reached. Raise the limit under "Usage" in ChatGPT settings or retry once it resets (transient errors such as `subscription_sharing_usage_unavailable` are not a limit-exceeded condition).
+
+**Known limits and cautions**
+
+- **The output token cap (`max_tokens`) cannot be sent.** The direct subscription path does not support some request fields such as `max_output_tokens`, so ARTEX removes them. Responses always stream and the session header is not used. Those inputs are hidden for this authentication method.
+- **Tokens are stored in the database at the same protection level as API keys (`llm_profile_oauth`, plain text).** They never appear in the UI, API responses, logs or LLM call records (llmrec), but anyone with access to the database or its backups can read them, so restrict that access. The refresh token rotates on every refresh, so running several ARTEX processes against one database is not supported (refresh serialization holds only inside one process).
+- **Personal, local use only.** The OpenAI cookbook makes ChatGPT plan usage available to open-source projects and personal projects that run locally, and says paid or remotely hosted apps need waitlist approval. Do not use one account to serve several people.
+- **Scope of verification.** The flow from the official documentation was implemented and tested against a mock issuer and mock servers (unit and integration tests). This repository's CI makes no end-to-end calls to the real `auth.openai.com` or `api.openai.com`, so in a new environment confirm with "Test connection". The model list and the supported reasoning efforts depend on the account and on the time.
+
+**Policy basis.** ARTEX uses only the method OpenAI has published. It does not read another tool's token file (such as Codex CLI's `~/.codex/auth.json`), borrow its client ID or call ChatGPT's internal `backend-api`; it calls only the public Responses API (`https://api.openai.com/v1/responses`).
+
+- [Sign in with ChatGPT cookbook](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt)
+- [Token sharing (open source) — sign in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
+- [Token sharing (open source) — models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
+- [OpenAI Help: supported open-source tools](https://help.openai.com/articles/20001542)
+
+**A Claude subscription (Pro/Max)** can be used only in the separate form below. Third-party apps offering Claude.ai login, or taking a user's credentials to send requests on their behalf, are not permitted by Anthropic's terms and remain unsupported.
+
+### Using a Claude subscription (official claude CLI, personal local use only)
+
+> **Off by default.** This feature is only for using your own Claude Pro/Max subscription **on your own PC, by yourself**. Do not expose this ARTEX to other people or share your subscription. Test only targets you are authorized to test and do not try to bypass Claude's refusals. Whether automated use falls within the subscription terms is Anthropic's call, and Anthropic may restrict or suspend access if they are violated. You are responsible for your use.
+
+**How it works.** ARTEX runs the **official `claude` CLI** — installed and signed in by you — as a child process in headless mode (`claude -p`, stream-json input and output). ARTEX never reads (`~/.claude/.credentials.json`, the keychain, `CLAUDE_CODE_OAUTH_TOKEN`, ...), stores, logs or forwards Claude credentials. It does not call `api.anthropic.com` with subscription credentials, does not send headers that impersonate Claude Code, and does not modify, patch or wrap the `claude` binary; it uses documented flags only. Authentication happens entirely inside `claude`; all ARTEX reads is the login state and the authentication method (`authMethod`) from the JSON that `claude auth status` prints.
+
+**Agent behaviour is kept as close as possible to the API Key path.** ARTEX keeps the agent loop, and one model call corresponds to one `claude` response (a provider bridge). All of `claude`'s built-in tools are turned off (`--tools ""`) and only ARTEX's tools are shown, over an MCP server reachable on `127.0.0.1` only (names get a `mcp__artex__` prefix). A tool call holds the MCP response open until ARTEX has executed the tool and returns its result, so permission checks, approvals, hooks, traffic capture, finding/asset/graph writes, transcripts and activity records are handled by the same ARTEX code as the API Key path. Role prompts are passed through `--system-prompt-file` untranslated and unmodified.
+
+**How to use it**
+
+1. In a terminal, install Claude Code (2.1.259 or newer) and sign in to your own subscription **yourself** with `claude auth login`. `claude auth status` should report the method `claude.ai`.
+2. Under "System → LLM" choose "New" → **Authentication** "Claude Code (subscription, personal local use)". Read the notice in the panel, tick the confirmation box and **turn it on** (an opt-in switch for the whole installation).
+3. Set the model (type an alias such as `sonnet` or `opus`, or a full name; blank uses `claude`'s default model) and the reasoning effort (`low` to `max`, passed as `--effort`), check it with "Test connection", then save. If `claude` is missing, too old or not signed in, the panel and the test result say why.
+4. "Set active" on the card, or assign this profile to a task or agent.
+
+**Environment and isolation**
+
+- The child process environment is built from an **allowlist**: only `PATH`, `HOME`, locale, temp-directory, Windows system, proxy/TLS variables, `CLAUDE_CONFIG_DIR` and `XDG_*` are passed on, everything else is dropped. That removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` (if present, `claude` would use API billing instead of the subscription), `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_*` routing switches and any such variable added in the future. Your personal settings (CLAUDE.md, auto memory, hooks, plugins, background tasks, ...) are kept out of the agent through environment variables and flags, and the process runs in a dedicated empty working directory. `--bare` is not used because it ignores subscription login.
+- If `authMethod` is not `claude.ai` or `oauth_token` (`api_key`, `api_key_helper`, third-party providers, ...) it is **treated as an API-billing path and refused**.
+- The MCP endpoint listens on a random port on `127.0.0.1` only, uses a 256-bit per-process token in its path, and checks the Host and Origin headers.
+- It will not turn on while ARTEX is reachable on an address other than `127.0.0.1` (a deployment you have checked yourself, for example a container whose port is published only on the host's `127.0.0.1`, can be allowed with the environment variable `ARTEX_CLAUDE_CODE_ALLOW_NONLOOPBACK=1`). The official Docker image does not contain `claude`, so this feature is best used with ARTEX running directly on your host.
+
+**Limits and concurrency**
+
+- The global cap on `claude` processes producing a model response at the same time defaults to 1 and cannot be set above 3. Processes waiting for a tool to run do not hold a slot. If a response produces no output for a while (10 minutes by default) the process is considered stuck and is cleaned up so the slot is returned (time is extended while `claude` reports that it is retrying the API, up to a fixed count).
+- Up to 8 live (waiting) `claude` processes are kept by default; beyond that, idle sessions are evicted before sessions waiting for a tool result, oldest first within each class (an evicted session continues on its next call by replaying the transcript). Tune it with the environment variable `ARTEX_CLAUDE_CODE_MAX_LIVE`.
+- When a subscription usage limit is hit, no new requests are sent (until the reported reset time; 30 minutes if unknown, 12 hours at most) and the error is surfaced. The 5-hour and weekly limits apply to the whole account, but a per-model limit (for example the weekly Opus limit) blocks only profiles of that model. With "LLM rotation" on, ARTEX fails over to the next profile. Transient rate limits and overload back off exponentially from 30 seconds to 5 minutes. There are no tight retries and no switching between accounts.
+
+**Known limits (differences from the API Key path)**
+
+- `claude`'s own agent loop and automatic context compaction can run alongside ARTEX's compaction.
+- After ARTEX compacts the start of the conversation, or after a process restart or a 10-minute idle expiry, the conversation is **fed back as a text transcript** (not as structured `tool_use` blocks). The content is the same but the form the model receives differs slightly.
+- The default prompt is replaced with `--system-prompt-file`, but the binary may still prepend its own identity text. The `mcp__artex__` prefix on tool names is explained by a short, code-fixed note at the end of the system prompt.
+- The output token cap, temperature, per-second/minute rate limits and the thinking type do not apply (hidden in the UI). Responses always stream.
+- When the same tool is called several times at once with identical arguments, matching results to calls depends on arrival order. With different arguments they are matched exactly by arguments.
+- Passing a token made by `claude setup-token` through the `CLAUDE_CODE_OAUTH_TOKEN` environment variable is not supported. Because ARTEX does not forward credentials, it removes that variable from the child environment; use the login that `claude auth login` stores.
+- Some user-facing errors appear in Korean only.
+- **Verification scope.** The shape of `claude`'s stream-json output is an assumption based on the official documentation, and this repository's tests run against a fake `claude` that follows it (tool round trip, several tools, usage limit, crash, cancellation, concurrency cap, environment sanitising, ...). End-to-end calls against the real `claude` are not made in CI, so on a new setup check with "Test connection" and a short task first.
+
+**Policy basis and what is uncertain.** Anthropic's documentation describes Claude Code as the official CLI and `claude -p` (headless) and `claude setup-token` as meant for scripts and automation, and it distinguishes an individual using the official CLI with their own subscription from a third party handling credentials or serving other people with a subscription. ARTEX takes only the former shape. However, the consumer terms restrict automated access that is not explicitly permitted and account sharing, and allow suspension without prior notice, so **whether an agent loop that runs overnight counts as "ordinary individual usage" is for Anthropic to decide, and ARTEX cannot guarantee it.** Using the model with an API key is the safest choice, and third-party apps offering Claude.ai login or routing requests through a user's Free, Pro or Max credentials remain unsupported.
+
+- [Claude Code legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)
+- [Authentication](https://code.claude.com/docs/en/authentication)
+- [Headless usage (`claude -p`)](https://code.claude.com/docs/en/headless)
+- [CLI reference](https://code.claude.com/docs/en/cli-reference)
+- [Anthropic consumer terms](https://www.anthropic.com/legal/consumer-terms)
 
 ### Model selection and output language
 

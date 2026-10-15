@@ -3088,6 +3088,25 @@ export const llmProfiles: LLMProfile[] = [
     max_tokens: 8192,
     max_tokens_field: "max_completion_tokens",
   },
+  {
+    id: "3",
+    name: "ChatGPT 구독",
+    format: "openai-responses",
+    model: "example-model-a",
+    rate_per_second: 0,
+    rate_per_minute: 0,
+    context_window_k: 400,
+    thinking_type: "",
+    reasoning_effort: "medium",
+    is_default: false,
+    priority: 5,
+    pool_exclude: false,
+    streaming: true,
+    max_tokens: 0,
+    max_tokens_field: "",
+    auth_mode: "chatgpt",
+    chatgpt: { status: "connected", email: "pentester@example.com", registered: true, plan_usage: true },
+  },
 ];
 
 export const llmConfig = {

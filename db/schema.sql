@@ -473,6 +473,48 @@ BEGIN
     END IF;
 END $$;
 
+-- 인증 방식. ''(기본) = API Key, 'chatgpt' = ChatGPT 구독(Sign in with ChatGPT, OAuth).
+-- 'chatgpt' 프로필은 항상 format='openai-responses' 이며 api_key 를 갖지 않는다
+-- (OAuth 자격 증명은 아래 llm_profile_oauth 에 둔다). 기본값 '' 이므로 기존 프로필은 그대로다.
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS auth_mode TEXT NOT NULL DEFAULT '';
+-- 'claude-code' = 사용자가 이 PC 에서 직접 로그인한 공식 claude CLI(Claude Code)를 헤드리스로 구동.
+-- 이 프로필은 항상 format='anthropic' 이고 api_key 를 갖지 않으며, 자격 증명은 DB 에 없다.
+ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_auth_mode_check;
+ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_auth_mode_check
+    CHECK (auth_mode IN ('','chatgpt','claude-code') AND
+           (auth_mode = '' OR (auth_mode = 'chatgpt' AND format = 'openai-responses')
+                           OR (auth_mode = 'claude-code' AND format = 'anthropic')));
+
+-- ChatGPT 구독(Sign in with ChatGPT) OAuth 자격 증명. 프로필당 최대 1행.
+--   client_id     : 최초 등록(dynamic_agent_client) 뒤 발급된 oaiapp_... 값. 비밀이 아니며,
+--                   로그아웃해도 남겨 같은 계정으로 다시 로그인할 때 재사용한다.
+--   subject/email : 검증된 ID 토큰의 sub / email. 재로그인 시 같은 계정인지 대조한다.
+--   id_token      : 직전 로그인에서 검증한 ID 토큰(재인가 시 id_token_hint 로만 쓴다).
+--   access_token / refresh_token / expires_at / earliest_refresh_at / scopes : 토큰 응답 그대로.
+--   pending_id_token / pending_received_at : 갱신 응답으로 받은 ID 토큰이 JWKS 장애 등으로
+--                   아직 검증되지 않았을 때의 체크포인트(회전된 refresh_token 을 잃지 않기 위함).
+--   status        : '' / 'disconnected'(토큰 없음) / 'connected' / 'reauth_required'(재로그인 필요).
+-- 토큰은 llm_profiles.api_key 와 같은 보호 수준(DB 평문)으로 저장하며, API 응답·로그에는 절대
+-- 내보내지 않는다. 프로필을 지우면 CASCADE 로 함께 사라진다.
+CREATE TABLE IF NOT EXISTS llm_profile_oauth (
+    profile_id          BIGINT PRIMARY KEY REFERENCES llm_profiles(id) ON DELETE CASCADE,
+    client_id           TEXT NOT NULL DEFAULT '',
+    subject             TEXT NOT NULL DEFAULT '',
+    email               TEXT NOT NULL DEFAULT '',
+    id_token            TEXT NOT NULL DEFAULT '',
+    access_token        TEXT NOT NULL DEFAULT '',
+    refresh_token       TEXT NOT NULL DEFAULT '',
+    expires_at          TIMESTAMPTZ,
+    earliest_refresh_at TIMESTAMPTZ,
+    scopes              TEXT NOT NULL DEFAULT '',
+    pending_id_token    TEXT NOT NULL DEFAULT '',
+    pending_received_at TIMESTAMPTZ,
+    status              TEXT NOT NULL DEFAULT '',
+    last_error          TEXT NOT NULL DEFAULT '',
+    saved_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (status IN ('','disconnected','connected','reauth_required'))
+);
+
 -- LLM 轮询熔断状态：某个配置连续失败(余额不足/key 失效/限流)后进入冷却，冷却期内
 -- 轮询直接跳过它。内存态为准，这里落库只为重启后不丢冷却窗口——加载时只取尚未
 -- 到期的行(open_until > now)，已到期的自然回到"正常"，等下一次调用半开试探。

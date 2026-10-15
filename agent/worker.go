@@ -53,16 +53,19 @@ type WebSearchOpts struct {
 
 type Worker struct {
 	findingRecorder FindingRecorder
-	prov            llm.Provider
-	model           string
-	workDir         string
-	proxyAddr       string
-	proxyCACert     string            // recording proxy's CA cert path (for WebFetch HTTPS verify)
-	webSearch       WebSearchOpts     // web_search tool backend selection (off by default)
-	tx              *transcript.Store // raw LLM conversation persistence (nil = off)
-	window          int               // context window in tokens (for compaction)
-	windowFn        func() int        // optional dynamic task-chain minimum
-	maxTurns        int               // max agent turns per run (0 = unlimited)
+	// releaseSession 은 끝난 워커 세션이 쥔 외부 자원(claude-code 의 claude 프로세스)을 정리한다. 비어 있으면
+	// 아무것도 하지 않는다.
+	releaseSession func(sessionID string)
+	prov           llm.Provider
+	model          string
+	workDir        string
+	proxyAddr      string
+	proxyCACert    string            // recording proxy's CA cert path (for WebFetch HTTPS verify)
+	webSearch      WebSearchOpts     // web_search tool backend selection (off by default)
+	tx             *transcript.Store // raw LLM conversation persistence (nil = off)
+	window         int               // context window in tokens (for compaction)
+	windowFn       func() int        // optional dynamic task-chain minimum
+	maxTurns       int               // max agent turns per run (0 = unlimited)
 	// runTimeout is the wall-clock budget for the main exploration of one intent
 	// (0 = unlimited). When it fires, the run is cut and a settlement round is
 	// forced so already-identified facts get written back instead of being lost.
@@ -175,6 +178,9 @@ func defaultToolsExcept(exclude ...string) []actool.CoreTool {
 }
 
 func (w *Worker) SetCompactionWindowResolver(fn func() int) { w.windowFn = fn }
+
+// SetSessionReleaser installs the cleanup run when a worker's session ends (see releaseSession).
+func (w *Worker) SetSessionReleaser(fn func(sessionID string)) { w.releaseSession = fn }
 
 func (w *Worker) compactionWindow() int {
 	if w.windowFn != nil {
@@ -496,6 +502,11 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)
+	// claude-code: 끝난 워커의 claude 프로세스를 바로 정리한다(채팅/메인/플래너는 턴마다 새 세션이지만
+	// 같은 대화가 이어지므로 유휴 만료에 맡긴다).
+	if w.releaseSession != nil && opts.SessionID != "" {
+		defer w.releaseSession(opts.SessionID)
+	}
 
 	// Resume prior conversation if this intent was paused/blocked/exhausted and is
 	// being re-run. The transcript ID is deterministic per intent, so if a prior

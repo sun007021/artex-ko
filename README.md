@@ -145,11 +145,93 @@ docker compose up -d          # artex 이미지 + postgres 를 함께 기동
 }
 ```
 
-**LLM:** `export ANTHROPIC_API_KEY=sk-...`(또는 `OPENAI_API_KEY`), 혹은 UI 의 "LLM 설정" 페이지에서 입력합니다. 선택 환경 변수로 `ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY` 를 둘 수 있습니다. 국산·오픈 모델을 쓰려면 OpenAI 호환 `ARTEX_LLM_BASE_URL` 을 지정하십시오.
+**LLM:** `export ANTHROPIC_API_KEY=sk-...`(또는 `OPENAI_API_KEY`), 혹은 UI 의 "LLM 설정" 페이지에서 입력합니다. API Key 대신 ChatGPT Plus/Pro 구독으로 로그인해 쓸 수도 있고([아래 참고](#chatgpt-구독으로-사용하기-api-key-없이)), 본인 PC 에서 개인적으로 쓰는 경우에 한해 직접 로그인한 공식 `claude` CLI 로 Claude 구독을 쓸 수도 있습니다([아래 참고](#claude-구독으로-사용하기-공식-claude-cli-개인-로컬-사용-전용)). 선택 환경 변수로 `ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY` 를 둘 수 있습니다. 국산·오픈 모델을 쓰려면 OpenAI 호환 `ARTEX_LLM_BASE_URL` 을 지정하십시오.
 
 **동시성:** 작업마다 돌리는 worker 에이전트 수는 "시스템 설정"에서 조정합니다(기본값 3).
 
 **자주 쓰는 인자:** `./start.sh -addr :8787 -proxy :8788` 에서 `-addr` 는 프런트엔드와 API 를 열고, `-proxy` 는 트래픽 기록 프록시 포트입니다. `-addr` 의 기본값은 `127.0.0.1:8787`(로컬 접속만)이며, 다른 기기에서 접속하려면 `:8787` 처럼 바인딩 주소를 명시해야 합니다(아래 "초기 설정 보호" 참고).
+
+### ChatGPT 구독으로 사용하기 (API Key 없이)
+
+ChatGPT Plus/Pro 구독의 사용량으로 모델을 호출할 수 있습니다. OpenAI 가 오픈소스·로컬 실행 앱에 공식으로 열어 둔 「Sign in with ChatGPT」 토큰 공유 경로를 쓰며, API Key 과금 대신 해당 ChatGPT 계정의 플랜 한도가 적용됩니다. 바뀌는 것은 인증뿐입니다. 에이전트 루프와 도구 호출은 기존 `openai-responses`(Responses API, `store:false`) 경로를 그대로 쓰므로 같은 모델이면 API Key 로 돌릴 때와 같은 방식으로 동작합니다.
+
+**사용 방법**
+
+1. 「시스템 → LLM」에서 「새로 만들기」를 누르고 **인증 방식**을 「ChatGPT 구독 (Plus/Pro)」으로 고릅니다.
+2. 이름과 모델을 입력하고 **「ChatGPT로 로그인」** 을 누릅니다. 설정이 먼저 저장되고, 새 탭에서 OpenAI 로그인·권한 승인 화면이 열립니다. 승인하면 브라우저가 `http://127.0.0.1:<포트>/auth/callback` 으로 돌아오고 ARTEX 가 자동으로 연결을 마칩니다(`<포트>` 는 ARTEX 에 접속한 포트이며 기본값은 8787). 권한 요청에는 「ChatGPT 플랜 사용량 사용」 승인이 포함되어야 합니다. 빠지면 카드에 「권한 필요」가 뜨고 「권한 다시 허용」으로 다시 로그인할 수 있습니다.
+3. 로그인되면 모델 칸 오른쪽의 새로고침 버튼이 **이 계정이 쓸 수 있는 모델 목록**을 불러옵니다(목록에 없는 모델도 직접 입력할 수 있습니다). 추론 강도(`reasoning.effort`)를 고르고 「연결 테스트」로 실제 호출을 확인한 뒤 저장합니다.
+4. 카드에서 「활성으로 설정」하거나 작업·에이전트에 이 설정을 지정합니다. 로그아웃하면 OpenAI 쪽 refresh token 폐기를 요청하고 이 서버의 토큰을 지웁니다.
+
+**ARTEX 서버와 브라우저가 다른 컴퓨터일 때 (원격 서버 / Docker)**
+
+OpenAI 의 리디렉션 주소는 반드시 `http://127.0.0.1:<포트>/auth/callback` 형식이라(포트만 바꿀 수 있음), 브라우저가 ARTEX 와 같은 호스트에 있을 때만 자동으로 돌아옵니다. Docker 는 8787 포트를 호스트에 게시해 두었고 브라우저가 같은 호스트라면 그대로 자동입니다. 브라우저가 다른 컴퓨터라면 승인 뒤 `127.0.0.1` 페이지가 열리지 않는 것이 정상입니다. 그때 **주소창의 URL 전체를 복사**해 로그인 영역의 「붙여넣기로 완료」 칸에 넣으면 같은 로그인이 마무리됩니다(코드는 일회용이고 10분 안에 써야 합니다).
+
+**사용량 한도와 장애 전환**
+
+ChatGPT 설정의 「Usage」에서 앱별 주간 한도를 걸 수 있습니다. 한도에 닿으면 `subscription_sharing_usage_limit_exceeded` 오류가 오며, OpenAI 문서가 구독 요청을 다른 결제 경로로 자동 전환하지 말라고 하므로, ARTEX 는 이를 API Key 의 잔액·할당량 소진처럼 취급하지 않습니다. 「LLM 순환」이 켜져 있어도 유료 API Key 설정으로 **자동 장애 전환하지 않고**, 한도에 닿았다는 안내와 함께 오류로 드러냅니다. ChatGPT 설정의 「Usage」에서 한도를 올리거나 풀린 뒤 다시 시도하십시오(`subscription_sharing_usage_unavailable` 같은 일시 오류는 한도 초과가 아닙니다).
+
+**알려진 제한과 주의**
+
+- **출력 토큰 상한(`max_tokens`)은 보낼 수 없습니다.** 구독 직접 경로가 `max_output_tokens` 등 일부 요청 필드를 지원하지 않아 ARTEX 가 제거합니다. 응답은 항상 스트리밍이며 세션 헤더도 쓰지 않습니다. 해당 입력은 이 인증 방식에서 숨겨집니다.
+- **토큰은 API Key 와 같은 수준으로 DB 에 보관됩니다(`llm_profile_oauth`, 평문).** 화면·API 응답·로그·LLM 호출 기록(llmrec)에는 나오지 않지만, DB 와 백업에 접근할 수 있는 사람은 읽을 수 있으니 접근을 통제하십시오. refresh token 은 갱신할 때마다 새 값으로 회전하므로 같은 DB 를 여러 ARTEX 프로세스가 동시에 쓰는 구성은 지원하지 않습니다(갱신 직렬화가 프로세스 안에서만 보장됩니다).
+- **개인·로컬 사용 범위입니다.** OpenAI 쿡북은 ChatGPT 플랜 사용량을 오픈소스 프로젝트와 로컬에서 도는 개인 프로젝트에 열어 두며, 유료·원격 호스팅 앱은 대기 명단 승인이 필요하다고 안내합니다. 한 계정을 여럿이 나눠 쓰는 용도로 쓰지 마십시오.
+- **검증 범위.** 공식 문서의 흐름을 모의 발급자·모의 서버로 구현·시험했습니다(단위·통합 테스트). 실제 `auth.openai.com`·`api.openai.com` 과의 종단 간 호출은 이 저장소의 CI 에서 하지 않으므로, 처음 쓰는 환경에서는 「연결 테스트」로 확인하십시오. 모델 목록과 지원하는 추론 강도는 계정·시점에 따라 달라집니다.
+
+**정책 근거.** ARTEX 는 OpenAI 가 공개한 방식만 씁니다. Codex CLI 같은 다른 도구의 토큰 파일(`~/.codex/auth.json`)을 읽거나 그 클라이언트 ID 를 빌리지 않고, ChatGPT 내부 `backend-api` 를 부르지 않으며, 공개 Responses API(`https://api.openai.com/v1/responses`)만 호출합니다.
+
+- [Sign in with ChatGPT 쿡북](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt)
+- [토큰 공유(오픈소스) — 로그인](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
+- [토큰 공유(오픈소스) — 모델과 추론](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
+- [OpenAI 도움말: 지원되는 오픈소스 도구](https://help.openai.com/articles/20001542)
+
+**Claude 구독(Pro/Max)** 은 아래의 별도 방식으로만 쓸 수 있습니다. 서드파티 앱이 Claude.ai 로그인을 제공하거나 사용자의 자격 증명을 받아 요청을 대신 보내는 방식은 Anthropic 약관상 허용되지 않아 지원하지 않습니다.
+
+### Claude 구독으로 사용하기 (공식 claude CLI, 개인 로컬 사용 전용)
+
+> **기본값은 꺼짐입니다.** 본인의 Claude Pro/Max 구독으로, **본인 PC 에서, 혼자** 쓰는 경우만을 위한 기능입니다. 이 ARTEX 를 다른 사람에게 노출하거나 구독을 나눠 쓰지 마십시오. 허가받은 대상만 점검하고, Claude 의 거절을 우회하려 하지 마십시오. 자동화된 사용이 구독 약관 범위에 드는지는 Anthropic 이 판단하며, 어기면 Anthropic 이 이용을 제한·정지할 수 있습니다. 책임은 사용자에게 있습니다.
+
+**동작 방식.** ARTEX 는 사용자가 직접 설치하고 직접 로그인한 **공식 `claude` CLI** 를 헤드리스 모드(`claude -p`, stream-json 입출력)의 하위 프로세스로 구동합니다. ARTEX 는 Claude 자격 증명을 읽지도(`~/.claude/.credentials.json`, 키체인, `CLAUDE_CODE_OAUTH_TOKEN` 등), 저장·기록·전달하지도 않습니다. 구독 자격으로 `api.anthropic.com` 을 직접 호출하지 않고, Claude Code 를 가장하는 헤더도 쓰지 않으며, `claude` 바이너리를 수정·패치·래핑하지 않고 문서화된 플래그만 씁니다. 인증은 전부 `claude` 안에서 일어나고, ARTEX 가 읽는 것은 `claude auth status` 가 돌려주는 JSON 의 로그인 여부와 인증 방식(`authMethod`)뿐입니다.
+
+**에이전트 동작은 API Key 경로와 최대한 같게 유지됩니다.** 에이전트 루프는 ARTEX 가 그대로 쥐고, 모델 호출 한 번이 `claude` 의 응답 한 번에 대응합니다(공급자 브리지). `claude` 의 내장 도구는 모두 끄고(`--tools ""`) ARTEX 도구만 `127.0.0.1` 전용 MCP 로 보여 줍니다(이름 앞에 `mcp__artex__` 가 붙음). 도구 호출은 MCP 응답을 보류해 두었다가 ARTEX 가 실행한 결과를 돌려주므로, 권한 검사·승인·훅·트래픽 캡처·발견/자산/그래프 기록·전사·활동 기록은 API Key 경로와 같은 ARTEX 코드가 처리합니다. 역할 프롬프트는 번역·수정 없이 `--system-prompt-file` 로 그대로 넘깁니다.
+
+**사용 방법**
+
+1. 터미널에서 Claude Code(2.1.259 이상)를 설치하고 **직접** `claude auth login` 으로 본인 구독에 로그인합니다. `claude auth status` 의 인증 방식이 `claude.ai` 여야 합니다.
+2. 「시스템 → LLM」에서 「새로 만들기」 → **인증 방식** 「Claude Code (구독, 개인 로컬 사용)」를 고릅니다. 패널의 안내를 읽고 확인란에 체크한 뒤 **켜기** 를 누릅니다(설치 전체에 적용되는 옵트인 스위치).
+3. 모델(별칭 `sonnet`·`opus` 같은 예시를 직접 입력하거나 전체 이름을 입력, 비우면 `claude` 기본 모델)과 추론 강도(`low`~`max`, `--effort` 로 전달)를 정하고 「연결 테스트」로 실제 호출을 확인한 뒤 저장합니다. `claude` 가 없거나 버전이 낮거나 로그인되어 있지 않으면 패널과 테스트 결과가 이유를 알려 줍니다.
+4. 카드에서 「활성으로 설정」하거나 작업·에이전트에 이 설정을 지정합니다.
+
+**환경과 격리**
+
+- 자식 프로세스 환경은 **허용 목록**으로 만듭니다. `PATH`·`HOME`·로캘·임시 디렉터리·Windows 시스템 변수·프록시/TLS 변수·`CLAUDE_CONFIG_DIR`·`XDG_*` 만 넘기고 나머지는 모두 뺍니다. 그래서 `ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`(있으면 `claude` 가 구독 대신 API 과금으로 가기 때문입니다)은 물론 `CLAUDE_CODE_OAUTH_TOKEN`·`ANTHROPIC_BASE_URL`·`CLAUDE_CODE_USE_*` 같은 경로 전환 변수와 나중에 생길 새 변수도 자동으로 빠집니다. 사용자 개인 설정(CLAUDE.md, 자동 메모리, 훅, 플러그인, 백그라운드 작업 등)이 에이전트에 새어 들어오지 않게 환경 변수와 플래그로 격리하며 전용 빈 작업 디렉터리에서 실행합니다. `--bare` 는 구독 로그인을 무시하므로 쓰지 않습니다.
+- `authMethod` 가 `claude.ai` 또는 `oauth_token` 이 아니면(`api_key`, `api_key_helper`, 제3자 공급자 등) **API 과금 경로로 보고 거절**합니다.
+- MCP 엔드포인트는 `127.0.0.1` 의 임의 포트에만 열리고, 프로세스마다 256비트 토큰 경로를 쓰며 Host/Origin 헤더를 검사합니다.
+- ARTEX 가 `127.0.0.1` 이외의 주소에서 접속 가능하게 실행 중이면 켜지 않습니다(소유자가 직접 확인한 배포, 예를 들어 호스트의 `127.0.0.1` 로만 포트를 게시한 컨테이너는 환경 변수 `ARTEX_CLAUDE_CODE_ALLOW_NONLOOPBACK=1` 로 허용). 공식 Docker 이미지에는 `claude` 가 들어 있지 않으므로, 이 기능은 호스트에서 ARTEX 를 직접 실행하는 구성을 권장합니다.
+
+**한도와 동시성**
+
+- 동시에 모델 응답을 만드는 `claude` 프로세스의 전역 상한은 기본 1, 설정으로도 최대 3 입니다. 도구 실행을 기다리는 프로세스는 슬롯을 쥐지 않습니다. 응답 중 출력이 한동안(기본 10분) 없으면 멈춘 것으로 보고 프로세스를 정리해 슬롯을 돌려줍니다(`claude` 가 API 를 재시도 중이라고 알리는 동안은 시간이 연장되지만 횟수 상한이 있습니다).
+- 살아 있는(대기 중인) `claude` 프로세스는 기본 8개까지 두고, 넘으면 도구 결과를 기다리는 세션보다 유휴 세션을, 같은 부류에서는 가장 오래 놀던 것을 먼저 정리합니다(정리된 세션은 다음 호출에서 전사를 다시 넣고 이어 갑니다). 환경 변수 `ARTEX_CLAUDE_CODE_MAX_LIVE` 로 조절합니다.
+- 구독 사용량 한도에 닿으면 새 요청을 보내지 않고(알려 준 해제 시각까지, 모르면 30분, 최대 12시간) 오류를 그대로 드러냅니다. 5시간·주간 한도는 계정 전체에 걸리지만, 모델별 한도(예: Opus 주간 한도)는 그 모델의 프로필만 막고 다른 모델 프로필은 계속 쓸 수 있습니다. 「LLM 순환」이 켜져 있으면 다음 설정으로 장애 전환됩니다. 일시적 속도 제한·과부하는 30초에서 5분까지 지수 백오프를 둡니다. 촘촘한 재시도나 계정 교체는 하지 않습니다.
+
+**알려진 제한 (API Key 경로와의 차이)**
+
+- `claude` 자체의 에이전트 루프와 자동 컨텍스트 압축이 ARTEX 의 압축과 별개로 함께 돌 수 있습니다.
+- ARTEX 가 대화 앞부분을 압축했거나, 프로세스가 재시작·10분 유휴 만료된 뒤에는 대화를 **텍스트 전사로 다시 넣습니다**(구조화된 `tool_use` 블록이 아님). 같은 내용이지만 모델이 받는 형식이 미묘하게 다를 수 있습니다.
+- `--system-prompt-file` 로 기본 프롬프트를 교체하지만 바이너리가 자체 식별 문구를 덧붙일 수 있습니다. 도구 이름의 `mcp__artex__` 접두사는 시스템 프롬프트 끝의 짧은 코드 고정 안내로 알립니다.
+- 출력 토큰 상한, temperature, 초당·분당 속도 제한, thinking 방식은 적용되지 않습니다(화면에서 숨김). 응답은 항상 스트리밍입니다.
+- 같은 도구를 같은 인자로 동시에 여러 번 부르면 결과 짝짓기가 호출 도착 순서에 의존합니다. 인자가 다르면 인자로 정확히 짝짓습니다.
+- `claude setup-token` 으로 만든 토큰을 환경 변수(`CLAUDE_CODE_OAUTH_TOKEN`)로 넘기는 방식은 지원하지 않습니다. ARTEX 가 자격 증명을 전달하지 않는 원칙에 따라 자식 프로세스 환경에서 이 변수를 지우므로, `claude auth login` 으로 저장된 로그인을 쓰십시오.
+- 사용자 대면 오류 일부는 한국어로만 나옵니다.
+- **검증 범위.** `claude` 의 stream-json 출력 형식은 공식 문서를 근거로 한 가정이며, 이 저장소의 테스트는 그 가정을 따르는 가짜 `claude` 로 돌립니다(도구 왕복, 다중 도구, 사용량 한도, 크래시, 취소, 동시 실행 상한, 환경 정제 등). 실제 `claude` 와의 종단 간 호출은 CI 에서 하지 않으므로, 처음 쓰는 환경에서는 「연결 테스트」와 짧은 작업으로 먼저 확인하십시오.
+
+**정책 근거와 불확실한 점.** Anthropic 문서는 Claude Code 를 공식 CLI 로, `claude -p`(헤드리스)와 `claude setup-token` 을 스크립트·자동화용으로 설명하며, 개인이 자신의 구독으로 공식 CLI 를 쓰는 것과 서드파티가 자격 증명을 다루거나 구독으로 다른 사람에게 서비스하는 것을 구분합니다. ARTEX 는 앞쪽 형태만 취합니다. 그러나 소비자 약관은 명시적으로 허용되지 않은 자동화된 접근, 계정 공유를 제한하고 사전 통지 없이 이용을 정지할 수 있다고 정하므로, **밤새 도는 자율 에이전트 루프가 「보통의 개인 사용」에 드는지는 Anthropic 이 판단할 일이며 ARTEX 가 보장할 수 없습니다.** 모델을 API Key 로 쓰는 것이 가장 안전한 선택이며, 서드파티 앱이 Claude.ai 로그인을 제공하거나 사용자의 Free·Pro·Max 자격 증명으로 요청을 대신 보내는 방식은 여전히 지원하지 않습니다.
+
+- [Claude Code 법적·준수 사항](https://code.claude.com/docs/en/legal-and-compliance)
+- [인증](https://code.claude.com/docs/en/authentication)
+- [헤드리스 사용(`claude -p`)](https://code.claude.com/docs/en/headless)
+- [CLI 레퍼런스](https://code.claude.com/docs/en/cli-reference)
+- [Anthropic 소비자 약관](https://www.anthropic.com/legal/consumer-terms)
 
 ### 모델 선택과 출력 언어
 

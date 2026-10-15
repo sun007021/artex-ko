@@ -25,6 +25,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/siwc"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/skill"
 )
@@ -114,6 +115,7 @@ const (
 
 	// LLM 설정 삭제
 	errMgmtLLMActiveDelete = "현재 활성화된 LLM 설정은 삭제할 수 없습니다. 먼저 다른 설정을 활성화하세요"
+	errMgmtLLMBadAuthMode  = "지원하지 않는 인증 방식입니다"
 	errMgmtLLMRefChanged   = "LLM 설정이 작업이나 대화에서 수정되는 중입니다. 다시 시도하세요"
 	errMgmtLLMRefTimeout   = "LLM 설정 참조가 해제되기를 기다리다 시간이 초과되었습니다. 다시 시도하세요"
 
@@ -1850,7 +1852,21 @@ func (s *Server) pgListProfiles(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"profiles": llmProfileDTOs(ps)})
+	dtos := llmProfileDTOs(ps)
+	// ChatGPT 구독 프로필에는 연결 상태(토큰 없음)를 붙인다.
+	if statuses, err := pg.ListProfileOAuthStatuses(r.Context()); err == nil {
+		for i, p := range ps {
+			if p.AuthMode != db.AuthModeChatGPT {
+				continue
+			}
+			st, ok := statuses[p.ID]
+			if !ok {
+				st = db.ProfileOAuthStatus{Status: db.OAuthStatusDisconnected}
+			}
+			dtos[i].ChatGPT = &st
+		}
+	}
+	writeJSON(w, 200, map[string]any{"profiles": dtos})
 }
 
 func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
@@ -1875,6 +1891,34 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	p := body.LLMProfile
 	p.APIKey = body.APIKey
 	p.Streaming = body.Streaming == nil || *body.Streaming
+	if p.AuthMode != "" && p.AuthMode != db.AuthModeChatGPT && p.AuthMode != db.AuthModeClaudeCode {
+		writeErr(w, 400, errMgmtLLMBadAuthMode)
+		return
+	}
+	// 구독 방식 프로필(ChatGPT, claude-code)의 정규화·검증은 db.NormalizeSubscription 한 곳에서 한다. API 경로 전용
+	// 필드는 비워지고, 모델·추론 강도는 사용자가 정한 값이 그대로 쓰인다.
+	if err := p.NormalizeSubscription(); err != nil {
+		switch {
+		case errors.Is(err, db.ErrChatGPTModelRequired):
+			writeErr(w, 400, errChatGPTModelRequired)
+		default:
+			writeErr(w, 400, errClaudeCodeBadEffort)
+		}
+		return
+	}
+	// 구독 → API Key 로 바꾸면 남은 OAuth 자격 증명을 폐기하고 지운다.
+	var prev *db.LLMProfile
+	if p.ID != 0 {
+		prev, _ = pg.ProfileByID(p.ID)
+	}
+	// claude-code 프로필: 설치 단위로 켜져 있어야 새로 만들거나 이 방식으로 바꿀 수 있다(옵트인). 이미 이
+	// 방식인 프로필의 수정은 꺼져 있어도 허용한다. API Key 전용 필드는 정규화로 비운다.
+	if p.AuthMode == db.AuthModeClaudeCode {
+		if !pg.ClaudeCodeSettings().Enabled && (prev == nil || prev.AuthMode != db.AuthModeClaudeCode) {
+			writeErr(w, 400, errClaudeCodeDisabled)
+			return
+		}
+	}
 	// 输出上限:负数无意义,归零(= 不发送该字段)。字段名开关只有 Chat Completions
 	// 用得上——anthropic 与 openai-responses 各自定死了字段名,存下来只会误导后续读者,
 	// 故非 openai 格式一律清空。未知取值同样清空,避免把 DB CHECK 的报错甩给用户。
@@ -1888,6 +1932,9 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	if prev != nil && prev.AuthMode == db.AuthModeChatGPT && p.AuthMode != db.AuthModeChatGPT {
+		s.dropChatGPTCredentials(r.Context(), prev)
 	}
 	// Editing a profile rebuilds any task pinned to it on its next round. Reapply
 	// the active profile too: the global fallback and explicit task chains must
@@ -1939,6 +1986,22 @@ func (s *Server) pgDeleteProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := pathInt(r, "id")
+	// 삭제되면 OAuth 행도 CASCADE 로 사라지므로, 원격 폐기에 쓸 토큰을 미리 읽어 둔다.
+	var delProf *db.LLMProfile
+	var delRec *siwc.Record
+	dp, err := pg.ProfileByID(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if dp != nil && dp.AuthMode == db.AuthModeChatGPT {
+		delProf = dp
+		// 토큰을 읽지 못하면 원격 폐기를 할 수 없다. 살아 있는 grant 를 남긴 채 지우지 않도록 삭제를 중단한다.
+		if delRec, err = s.chatgptSession(dp).Snapshot(r.Context()); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
 	if err := pg.DeleteProfileContext(r.Context(), id); err != nil {
 		switch {
 		case errors.Is(err, db.ErrActiveLLMProfileDelete):
@@ -1953,6 +2016,11 @@ func (s *Server) pgDeleteProfile(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 		}
 		return
+	}
+	if delProf != nil {
+		s.cgpt.sessions.forget(id)
+		s.cgpt.logins.forget(id)
+		go s.revokeChatGPTTokens(delProf, delRec)
 	}
 	s.invalidateProfileAgents() // drop cached agents for the removed profile
 	s.llmHealth.Reset(id)       // its breaker state is meaningless now (row is FK-cascaded away)

@@ -30,6 +30,7 @@ type Capture struct {
 	mu       sync.Mutex
 	request  string
 	attempts []*attempt
+	secrets  []string
 }
 
 type attempt struct {
@@ -81,6 +82,38 @@ func (c *Capture) TeeResponse(status int, rc io.ReadCloser) io.ReadCloser {
 	return &teeBody{rc: rc, c: c, a: a}
 }
 
+// redactedMark replaces a registered secret wherever it appears in captured bytes.
+const redactedMark = "[REDACTED]"
+
+// AddSecret registers a credential (e.g. the OAuth access token an auth transport
+// just injected) that must never appear in what Capture hands back. Matching is
+// by exact value, applied when the capture is READ, so it is independent of the
+// order in which the request body, the response and the secret were seen, and it
+// cannot mangle unrelated look-alikes (a pentest target's own JWTs and tokens are
+// legitimate conversation content and are left alone). Short values are ignored
+// to avoid masking ordinary words.
+func (c *Capture) AddSecret(secret string) {
+	if c == nil || len(secret) < 8 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.secrets {
+		if s == secret {
+			return
+		}
+	}
+	c.secrets = append(c.secrets, secret)
+}
+
+// redact masks every registered secret in s. Callers hold c.mu.
+func (c *Capture) redact(s string) string {
+	for _, sec := range c.secrets {
+		s = strings.ReplaceAll(s, sec, redactedMark)
+	}
+	return s
+}
+
 // RawRequest returns the request body as sent, or "" if nothing was captured.
 func (c *Capture) RawRequest() string {
 	if c == nil {
@@ -88,7 +121,7 @@ func (c *Capture) RawRequest() string {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.request
+	return c.redact(c.request)
 }
 
 // RawResponse returns the response bytes as received. A single attempt yields
@@ -105,12 +138,12 @@ func (c *Capture) RawResponse() string {
 	case 0:
 		return ""
 	case 1:
-		return c.attempts[0].body.String()
+		return c.redact(c.attempts[0].body.String())
 	}
 	var b strings.Builder
 	for i, a := range c.attempts {
 		fmt.Fprintf(&b, "===== attempt %d/%d — HTTP %d =====\n", i+1, len(c.attempts), a.status)
-		body := a.body.String()
+		body := c.redact(a.body.String())
 		b.WriteString(body)
 		if !strings.HasSuffix(body, "\n") {
 			b.WriteByte('\n')
@@ -136,7 +169,7 @@ func (c *Capture) Attempts() []Attempt {
 	defer c.mu.Unlock()
 	out := make([]Attempt, 0, len(c.attempts))
 	for _, a := range c.attempts {
-		out = append(out, Attempt{Status: a.status, Body: a.body.String()})
+		out = append(out, Attempt{Status: a.status, Body: c.redact(a.body.String())})
 	}
 	return out
 }

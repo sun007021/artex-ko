@@ -368,3 +368,28 @@ func TestExpiredWindowIsClosed(t *testing.T) {
 		t.Fatal("expired window should read as closed")
 	}
 }
+
+// A vetoed error (e.g. an exhausted ChatGPT plan) reaches the caller instead of moving to the next member,
+// for streaming and non-streaming calls alike.
+func TestPoolNoFailoverVetoSurfacesTheError(t *testing.T) {
+	limit := &fakeProv{name: "a", errs: []error{errors.New("openai-responses: status 402: usage_limit_exceeded")}}
+	backup := okProv("b", "paid")
+	pool := New([]*Member{member(1, "a", 10, limit), member(2, "b", 5, backup)}, NewRegistry(nil, nil))
+	pool.SetNoFailover(func(err error) bool { return strings.Contains(err.Error(), "usage_limit_exceeded") })
+
+	if _, err := drain(pool.Stream(context.Background(), llm.CompletionRequest{})); err == nil || errors.Is(err, ErrExhausted) {
+		t.Fatalf("stream: want the original error, got %v", err)
+	}
+	if _, _, _, err := pool.Complete(context.Background(), llm.CompletionRequest{}); err == nil || errors.Is(err, ErrExhausted) {
+		t.Fatalf("complete: want the original error, got %v", err)
+	}
+	if backup.calls != 0 {
+		t.Fatalf("the backup profile must not be tried, calls=%d", backup.calls)
+	}
+	// other failures still fail over
+	pool2 := New([]*Member{member(1, "a", 10, failProv("a", 503)), member(2, "b", 5, backup)}, NewRegistry(nil, nil))
+	pool2.SetNoFailover(func(err error) bool { return strings.Contains(err.Error(), "usage_limit_exceeded") })
+	if text, err := drain(pool2.Stream(context.Background(), llm.CompletionRequest{})); err != nil || text != "paid" {
+		t.Fatalf("%q %v", text, err)
+	}
+}

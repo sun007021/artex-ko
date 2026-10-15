@@ -101,3 +101,28 @@ func TestCaptureEmptyWhenNoHTTPHappened(t *testing.T) {
 		t.Fatal("unused capture should be empty")
 	}
 }
+
+func TestCaptureAddSecretMasksExactValuesOnRead(t *testing.T) {
+	const secret = "tok-0123456789"
+	c := &Capture{}
+	c.AddSecret("short") // too short to be a meaningful secret: ignored
+	c.AddSecret(secret)  // registered AFTER the bytes may have been captured
+	c.AddSecret(secret)  // duplicates are harmless
+	c.SetRequest(`{"input":"use ` + secret + ` and short"}`)
+	rc := c.TeeResponse(400, io.NopCloser(strings.NewReader(`error: bad token `+secret)))
+	_, _ = io.ReadAll(rc)
+
+	if got := c.RawRequest(); strings.Contains(got, secret) || !strings.Contains(got, "[REDACTED]") || !strings.Contains(got, "short") {
+		t.Fatalf("request: %s", got)
+	}
+	if got := c.RawResponse(); strings.Contains(got, secret) || !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("response: %s", got)
+	}
+	for _, a := range c.Attempts() {
+		if strings.Contains(a.Body, secret) {
+			t.Fatalf("attempt leaks: %s", a.Body)
+		}
+	}
+	var nilCap *Capture
+	nilCap.AddSecret(secret) // nil-safe like the rest of the API
+}

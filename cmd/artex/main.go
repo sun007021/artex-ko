@@ -114,6 +114,8 @@ func run() int {
 	log.Printf(config.T("[config] skill 디렉터리: %s"), skillDir)
 	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
 	srv.WarnIfExposed(*addr)
+	srv.SetListenAddr(*addr)
+	defer srv.CloseClaudeCode() // claude-code 인증 방식이 띄운 claude 프로세스를 종료 때 모두 정리한다
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),

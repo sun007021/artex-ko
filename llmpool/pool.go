@@ -49,6 +49,22 @@ type Pool struct {
 	members []*Member // in chain order (active first, then priority DESC)
 	health  *Registry
 	rr      atomic.Uint64 // rotates the starting point within an equal-priority group
+	// noFailover, when set, vetoes failover for errors that must reach the caller
+	// as they are (e.g. an exhausted ChatGPT plan, which is never to be moved to
+	// another billing path automatically).
+	noFailover func(error) bool
+}
+
+// SetNoFailover installs the veto described on Pool.noFailover. Call it before the
+// pool is used.
+func (p *Pool) SetNoFailover(fn func(error) bool) { p.noFailover = fn }
+
+// failover is shouldFailover plus the pool's veto.
+func (p *Pool) failover(ctx context.Context, err error) bool {
+	if err != nil && p.noFailover != nil && p.noFailover(err) {
+		return false
+	}
+	return shouldFailover(ctx, err)
 }
 
 // New builds a Pool over members (already in chain order). Returns nil when the
@@ -87,7 +103,7 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 			emitted := false
 			var failed error
 			for ev, err := range m.Prov.Stream(ctx, req) {
-				if err != nil && !emitted && shouldFailover(ctx, err) {
+				if err != nil && !emitted && p.failover(ctx, err) {
 					failed = err
 					break // safe window: nothing reached the caller yet
 				}
@@ -136,7 +152,7 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 			p.health.Pass(m.ID)
 			return msg, sr, usage, nil
 		}
-		if !shouldFailover(ctx, err) {
+		if !p.failover(ctx, err) {
 			// Non-failover error (e.g. ctx cancel, deterministic 4xx): surface as-is
 			// without tripping health, matching Stream's non-failover path.
 			p.health.Pass(m.ID)

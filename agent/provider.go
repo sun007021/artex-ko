@@ -18,9 +18,12 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/claudecode"
 	"github.com/Autumn-27/artex/llmrec"
+	"github.com/Autumn-27/artex/siwc"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/compaction"
 	"github.com/Autumn-27/norma/llm"
@@ -77,6 +80,21 @@ type Config struct {
 	// Retry 是该配置解析后的重试参数(profile 覆盖 → 全局策略 → 内置默认,由
 	// server 侧解析)。三层的含义见 RetryConfig;零值 = 完全沿用内置默认。
 	Retry RetryConfig
+	// AuthMode: "" = 정적 API Key(기본), AuthModeChatGPT = ChatGPT 구독(Sign in with
+	// ChatGPT). 구독 모드는 openai-responses 경로를 그대로 쓰되 Bearer 를 TokenSource 의
+	// OAuth 액세스 토큰으로 요청마다 채운다(chatgpt.go). BaseURL/APIKey 는 무시되고,
+	// MaxTokens·Temperature 등 지원되지 않는 필드는 전송 직전에 제거된다.
+	AuthMode string
+	// TokenSource 는 AuthMode=chatgpt 일 때 필수다. Config 는 == 로 비교되므로(server 가
+	// 캐시된 구성과 비교한다) 포인터 구현이어야 한다.
+	TokenSource TokenSource
+	// ClaudeBinary/ClaudeWorkDir 는 AuthMode=claude-code 일 때만 쓴다(claudecode.go). 둘 다
+	// 문자열이라 Config 는 계속 == 로 비교된다. 비어 있으면 PATH 의 "claude" / 임시 디렉터리.
+	ClaudeBinary  string
+	ClaudeWorkDir string
+	// ClaudeManager 는 claude-code 의 실행 환경(슬롯·게이트·세션 표)이다. 서버가 하나 만들어 모든
+	// 프로필의 Config 에 넣는다. 포인터라서 Config 는 계속 == 로 비교된다.
+	ClaudeManager *claudecode.Manager
 }
 
 // RetryConfig 是随一个 LLM 配置走的重试参数。每层的「次数」统一语义:
@@ -254,14 +272,31 @@ func (c Config) Provider() string {
 // limiter lives on the single provider instance — so planner + all workers +
 // main agent (which share this provider) are bounded by one shared rate limit.
 func (c Config) NewProvider() (llm.Provider, error) {
-	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey)
+	if c.UsesClaudeCode() {
+		// 구독으로 로그인된 claude CLI 가 모델 턴을 만든다(HTTP 클라이언트·API Key 없음).
+		return c.newClaudeCodeProvider()
+	}
+	var client *http.Client
+	var err error
+	baseURL, apiKey, format := c.BaseURL, c.APIKey, c.Format
+	if c.UsesChatGPT() {
+		if c.TokenSource == nil {
+			return nil, fmt.Errorf("llm: chatgpt auth requires a token source")
+		}
+		// 구독 토큰은 api.openai.com/v1 로만 간다 — 프로필의 base_url 은 무시한다.
+		// 세션 헤더 같은 비규격 헤더도 보내지 않는다.
+		client, err = chatGPTHTTPClient(c.Proxy, c.TokenSource)
+		baseURL, apiKey, format = ChatGPTBaseURL, chatGPTPlaceholderKey, llm.FormatOpenAIResponses
+	} else {
+		client, err = quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey)
+	}
 	if err != nil {
 		return nil, err
 	}
 	lc := llm.Config{
-		Format:     c.Format,
-		BaseURL:    c.BaseURL,
-		APIKey:     c.APIKey,
+		Format:     format,
+		BaseURL:    baseURL,
+		APIKey:     apiKey,
 		Model:      c.Model,
 		HTTPClient: client,
 	}
@@ -291,6 +326,18 @@ var transientQuotaLimit = regexp.MustCompile(`(?i)(?:\b(?:rpm|tpm|rpd|qps)\b|quo
 
 func IsQuotaExhaustedMessage(message string) bool {
 	message = strings.ToLower(message)
+	// ChatGPT 구독의 사용량 한도(subscription_sharing_usage_limit_exceeded)는 일부러 소진으로 보지 않는다.
+	// 공식 문서가 구독 요청을 다른 결제 경로(API Key)로 자동 전환하지 말라고 하므로, 한도에 닿으면
+	// 사용자에게 오류로 알리고 장애 전환·순환도 막는다(IsNoFailoverMessage). 이 코드를 담은 오류에
+	// 다른 소진 문구가 섞여 있어도 마찬가지다.
+	if IsNoFailoverMessage(message) {
+		return false
+	}
+	// Claude 구독(claude-code): 5시간/주간 사용량 한도 소진. claudecode 가 오류 앞에 이 고정 마커를
+	// 붙인다. 시간이 지나야 풀리는 한도이므로 장애 전환 대상이다.
+	if strings.Contains(message, claudecode.UsageLimitMarker) {
+		return true
+	}
 	// Authentication/authorization and provider-side 5xx failures never rotate,
 	// even when a gateway happens to echo a quota-looking phrase in the body.
 	if nonFailoverHTTPStatus.MatchString(message) {
@@ -321,6 +368,33 @@ func IsQuotaExhaustedMessage(message string) bool {
 		!strings.Contains(message, "rate limit") &&
 		!strings.Contains(message, "too many requests")
 }
+
+// IsQuotaExhaustedError is IsQuotaExhaustedMessage for an error value. A typed claude-code
+// usage-limit error is recognized without relying on its message text; everything else (and
+// errors that crossed a string boundary) goes through the message classifier unchanged.
+func IsQuotaExhaustedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsNoFailoverError(err) {
+		return false
+	}
+	if claudecode.IsUsageLimit(err) {
+		return true
+	}
+	return IsQuotaExhaustedMessage(err.Error())
+}
+
+// IsNoFailoverMessage reports whether an error must not make a request move to another
+// profile automatically, whatever its HTTP status. Today that is the ChatGPT plan usage
+// limit: the Sign in with ChatGPT documentation says an exhausted plan is not to be
+// silently switched to another billing path, so the error is surfaced instead.
+func IsNoFailoverMessage(message string) bool {
+	return strings.Contains(strings.ToLower(message), siwc.CodeUsageLimitExceeded)
+}
+
+// IsNoFailoverError is IsNoFailoverMessage for an error value.
+func IsNoFailoverError(err error) bool { return err != nil && IsNoFailoverMessage(err.Error()) }
 
 // quotaAwareTransport preserves Norma's normal retry behavior except for a 429
 // whose body explicitly says the account quota/balance is exhausted. Norma's
@@ -397,26 +471,112 @@ func requestBodySnapshot(req *http.Request) string {
 	return string(b)
 }
 
-func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) {
+// baseTransport builds an http.Transport: direct unless an explicit proxy is configured
+// (it never falls back to the *_PROXY environment variables). Errors never echo the
+// proxy value — it may carry credentials (user:pass@host); see describeProxy.
+func baseTransport(proxy string) (*http.Transport, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	proxy = strings.TrimSpace(proxy)
 	if proxy == "" {
 		transport.Proxy = nil // 留空=直连,不回退 HTTP_PROXY/HTTPS_PROXY 环境变量
-	} else {
-		proxyURL, err := url.Parse(proxy)
-		if err != nil {
-			return nil, fmt.Errorf("llm: invalid proxy %q: %w", proxy, err)
+		return transport, nil
+	}
+	proxyURL, err := url.Parse(proxy)
+	if err != nil {
+		return nil, fmt.Errorf("llm: invalid proxy URL")
+	}
+	switch proxyURL.Scheme {
+	case "http", "https", "socks5":
+	case "":
+		return nil, fmt.Errorf("llm: proxy %s missing scheme (use http://, https:// or socks5://)", describeProxy(proxy))
+	default:
+		return nil, fmt.Errorf("llm: unsupported proxy scheme %q (use http, https or socks5)", proxyURL.Scheme)
+	}
+	if proxyURL.Host == "" {
+		return nil, fmt.Errorf("llm: proxy %s has no host", describeProxy(proxy))
+	}
+	transport.Proxy = http.ProxyURL(proxyURL)
+	return transport, nil
+}
+
+// describeProxy renders a proxy setting for logs and errors without its credentials:
+// scheme://host only. Anything that does not parse is not shown at all.
+func describeProxy(proxy string) string {
+	u, err := url.Parse(strings.TrimSpace(proxy))
+	if err != nil || u.Host == "" {
+		return "<redacted>"
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// DescribeProxy is describeProxy for other packages (server logs).
+func DescribeProxy(proxy string) string { return describeProxy(proxy) }
+
+// transports caches one http.Transport per proxy setting for the clients that
+// outlive a single call (the model catalog, the auth server), so repeated use shares
+// connections instead of building — and leaking — a transport every time.
+var transports = struct {
+	sync.Mutex
+	m map[string]*http.Transport
+}{m: map[string]*http.Transport{}}
+
+const maxCachedTransports = 16
+
+func sharedTransport(proxy string) (*http.Transport, error) {
+	key := strings.TrimSpace(proxy)
+	transports.Lock()
+	defer transports.Unlock()
+	if tr := transports.m[key]; tr != nil {
+		return tr, nil
+	}
+	tr, err := baseTransport(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(transports.m) >= maxCachedTransports { // a changing proxy setting must not accumulate idle pools
+		for k, old := range transports.m {
+			old.CloseIdleConnections()
+			delete(transports.m, k)
 		}
-		switch proxyURL.Scheme {
-		case "http", "https", "socks5":
-		case "":
-			return nil, fmt.Errorf("llm: proxy %q missing scheme (use http://, https:// or socks5://)", proxy)
-		default:
-			return nil, fmt.Errorf("llm: unsupported proxy scheme %q (use http, https or socks5)", proxyURL.Scheme)
-		}
-		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	transports.m[key] = tr
+	return tr, nil
+}
+
+// ProxyHTTPClient builds a plain *http.Client that honours the same explicit-proxy
+// rule as the LLM providers (empty = direct, never the *_PROXY environment
+// variables). The sign-in code uses it so auth.openai.com calls follow a profile's
+// proxy setting too.
+func ProxyHTTPClient(proxy string, timeout time.Duration) (*http.Client, error) {
+	transport, err := sharedTransport(proxy)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{Transport: transport, Timeout: timeout}, nil
+}
+
+func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) {
+	transport, err := baseTransport(proxy)
+	if err != nil {
+		return nil, err
 	}
 	return &http.Client{Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey)}}, nil
+}
+
+// chatGPTHTTPClient is quotaAwareHTTPClient for subscription profiles: the quota
+// layer stays outermost (raw capture) and the
+// token-injecting transport sits between it and the network.
+func chatGPTHTTPClient(proxy string, src TokenSource) (*http.Client, error) {
+	transport, err := sharedTransport(proxy)
+	if err != nil {
+		return nil, err
+	}
+	inner := &chatgptTransport{base: transport, src: src, endpoint: chatGPTResponsesEndpoint}
+	return &http.Client{
+		Transport: quotaAwareTransport{base: inner},
+		// 리다이렉트를 따라가지 않는다 — 자격 증명이 다른 호스트로 갈 길을 아예 막는다.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}, nil
 }
 
 // logTestConnection prints the raw HTTP status code(s) and response body of a
@@ -459,7 +619,11 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	if err != nil {
 		return 0, "", err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	timeout := 30 * time.Second
+	if c.UsesClaudeCode() {
+		timeout = 90 * time.Second // claude 프로세스 기동 + 첫 응답까지 API 호출보다 오래 걸린다
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	// 抓取原始 wire 报文:连接测试最需要看到的就是网关到底回了什么(状态码+响应体),
 	// 而 norma 把响应解码成 StreamEvent 后这些就没了。quotaAwareTransport 会在
@@ -471,7 +635,11 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	// x-opencode-session 头,缺了直接 400 MissingSessionID),这会导致"对话正常、
 	// 点击测试却 400"的落差。这里补挂一个一次性随机 session id,让测试与真实对话走同
 	// 一套发头逻辑;未配 SessionHeaderKey 的端点不读它,无副作用。
-	ctx = transcript.WithSessionID(ctx, "conntest-"+transcript.NewSessionID())
+	sid := "conntest-" + transcript.NewSessionID()
+	ctx = transcript.WithSessionID(ctx, sid)
+	if c.UsesClaudeCode() && c.ClaudeManager != nil {
+		defer c.ClaudeManager.CloseSession(sid) // 테스트가 끝나면 이 세션의 claude 프로세스를 바로 정리한다
+	}
 	start := time.Now()
 	// MaxTokens 要给足：推理模型(如 deepseek-v4-pro)在给出答案前会先产出一大段
 	// 思考(实测对一句 "ping" 也能烧 ~2900 token)。若只给 32,模型会一直卡在"思考阶段"
