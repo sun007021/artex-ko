@@ -72,7 +72,12 @@ func newResponsesServer(t *testing.T, handle func(n int, w http.ResponseWriter, 
 
 func (rs *responsesServer) provider(t *testing.T, src TokenSource, retries int) llm.Provider {
 	t.Helper()
-	inner := &chatgptTransport{base: http.DefaultTransport, src: src, endpoint: rs.URL + "/v1/responses"}
+	return rs.providerDaybreak(t, src, retries, false)
+}
+
+func (rs *responsesServer) providerDaybreak(t *testing.T, src TokenSource, retries int, daybreak bool) llm.Provider {
+	t.Helper()
+	inner := &chatgptTransport{base: http.DefaultTransport, src: src, endpoint: rs.URL + "/v1/responses", daybreak: daybreak}
 	p, err := llm.NewProvider(llm.Config{
 		Format: llm.FormatOpenAIResponses, BaseURL: rs.URL + "/v1", APIKey: chatGPTPlaceholderKey, Model: "gpt-test",
 		ReasoningEffort: "high", MaxRetries: retries,
@@ -137,7 +142,7 @@ func TestSanitizeChatGPTRequest(t *testing.T) {
 	in := `{"model":"m","instructions":"s","input":[{"role":"system","content":"x"},{"role":"user","content":"u"},{"type":"function_call","call_id":"c","name":"n","arguments":"{}"}],
 "tools":[{"type":"function","name":"n"}],"max_output_tokens":4096,"temperature":0.3,"top_p":1,"metadata":{"a":"b"},"user":"u","truncation":"auto",
 "previous_response_id":"r","reasoning":{"effort":"high"},"stream":false,"store":true}`
-	out, want, err := sanitizeChatGPTRequest([]byte(in))
+	out, want, err := sanitizeChatGPTRequest([]byte(in), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +167,7 @@ func TestSanitizeChatGPTRequest(t *testing.T) {
 	if strings.Contains(string(m["input"]), `"system"`) || !strings.Contains(string(m["input"]), `"developer"`) {
 		t.Fatalf("system role must become developer: %s", m["input"])
 	}
-	if _, _, err := sanitizeChatGPTRequest([]byte(`[1]`)); err == nil {
+	if _, _, err := sanitizeChatGPTRequest([]byte(`[1]`), false); err == nil {
 		t.Fatal("non-object body must be rejected")
 	}
 }
@@ -207,6 +212,55 @@ func TestChatGPTStreamEndToEnd(t *testing.T) {
 	if ns["type"] != "namespace" || ns["name"] != chatGPTToolNamespace || ns["description"] == "" || len(inner) != 1 ||
 		first["type"] != "function" || first["name"] != "run_cmd" {
 		t.Fatalf("namespace shape: %v", ns)
+	}
+}
+
+// Daybreak 스위치: 켜면 모든 요청에 access_programs.cyber=daybreak_blue 가 실리고, 끄면(기본) 필드가 아예 없다.
+func TestChatGPTDaybreakAccessProgram(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		on   bool
+	}{{"on", true}, {"off", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rs := newResponsesServer(t, func(_ int, w http.ResponseWriter, r *http.Request) {
+				sse(w, `{"type":"response.created","response":{}}`, evTextDelta, evCompleted)
+			})
+			if _, _, _, _, err := collect(t, rs.providerDaybreak(t, &fakeSource{tok: "t"}, 0, tc.on), baseReq()); err != nil {
+				t.Fatal(err)
+			}
+			ap, present := rs.bodies[0]["access_programs"]
+			if !tc.on {
+				if present {
+					t.Fatalf("꺼진 상태에서는 access_programs 를 보내지 않는다: %v", ap)
+				}
+				return
+			}
+			m, _ := ap.(map[string]any)
+			if len(m) != 1 || m["cyber"] != "daybreak_blue" {
+				t.Fatalf("access_programs: %v", ap)
+			}
+		})
+	}
+}
+
+func TestSanitizeChatGPTRequestDaybreak(t *testing.T) {
+	t.Parallel()
+	// 호출자가 넣어 둔 값이 있어도 켜면 우리 값으로 정해진다.
+	out, _, err := sanitizeChatGPTRequest([]byte(`{"model":"m","input":"x","access_programs":{"cyber":"standard"}}`), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]map[string]string
+	_ = json.Unmarshal(out, &m)
+	if m["access_programs"]["cyber"] != "daybreak_blue" {
+		t.Fatalf("%s", out)
+	}
+	// 끄면 본문을 건드리지 않는다.
+	out, _, err = sanitizeChatGPTRequest([]byte(`{"model":"m","input":"x"}`), false)
+	if err != nil || strings.Contains(string(out), "access_programs") {
+		t.Fatalf("%s %v", out, err)
 	}
 }
 
@@ -430,7 +484,7 @@ func TestChatGPTTransportRefusesOtherDestinations(t *testing.T) {
 		t.Fatalf("credentials were requested/sent to a foreign host (calls=%v)", src.calls)
 	}
 	// the production client never follows redirects
-	c, err := chatGPTHTTPClient("", src)
+	c, err := chatGPTHTTPClient("", src, false)
 	if err != nil {
 		t.Fatal(err)
 	}

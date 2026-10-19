@@ -21,6 +21,18 @@ func TestNormalizeSubscription(t *testing.T) {
 		g.MaxTokensField != "" || g.SessionHeaderKey != "" || !g.Streaming || g.Model != "some-model" {
 		t.Fatalf("%+v", g)
 	}
+	// Daybreak 는 ChatGPT 구독에서만 유지되고, 다른 인증 방식에서는 꺼진다.
+	dg := LLMProfile{AuthMode: AuthModeChatGPT, Model: "m", Daybreak: true}
+	if err := dg.NormalizeSubscription(); err != nil || !dg.Daybreak {
+		t.Fatalf("chatgpt 는 Daybreak 를 유지: %v %+v", err, dg)
+	}
+	for _, mode := range []string{"", AuthModeClaudeCode} {
+		o := LLMProfile{AuthMode: mode, Model: "m", Daybreak: true}
+		_ = o.NormalizeSubscription()
+		if o.Daybreak {
+			t.Fatalf("auth_mode=%q 에서는 Daybreak 가 꺼져야 한다", mode)
+		}
+	}
 	empty := LLMProfile{AuthMode: AuthModeChatGPT, Model: "  "}
 	if err := empty.NormalizeSubscription(); !errors.Is(err, ErrChatGPTModelRequired) {
 		t.Fatalf("빈 모델: %v", err)

@@ -90,6 +90,7 @@ func chatgptReady(sess *siwc.Session) bool {
 func (s *Server) profileAgentConfig(p *db.LLMProfile) (cfg agent.Config, ready bool) {
 	if p.AuthMode == db.AuthModeChatGPT {
 		cfg = agent.NewChatGPTConfig(p.Model, p.Proxy, s.chatgptSession(p))
+		cfg.Daybreak = p.Daybreak
 		ready = chatgptReady(s.chatgptSession(p))
 		// 구독 경로: 스트리밍 고정, 출력 상한(max_output_tokens)과 세션 헤더는 지원되지 않아
 		// 보내지 않는다(MaxTokens 는 0 = 상한 없음으로 둔다).
@@ -600,7 +601,7 @@ func (s *Server) dropChatGPTCredentials(ctx context.Context, p *db.LLMProfile) {
 
 // testChatGPT 는 저장된 구독 프로필로 실제 최소 호출을 보내 연결을 확인한다. 폼의 모델·추론 강도를
 // 그대로 써서 "테스트는 통과했는데 실행은 거부"되는 차이를 없앤다.
-func (s *Server) testChatGPT(w http.ResponseWriter, r *http.Request, profileID *int64, model, thinking, effort string) {
+func (s *Server) testChatGPT(w http.ResponseWriter, r *http.Request, profileID *int64, model, thinking, effort string, daybreak bool) {
 	fail := func(msg string) { writeJSON(w, 200, map[string]any{"ok": false, "error": trMsg(msg)}) }
 	if s.m == nil || s.m.pg == nil || profileID == nil {
 		fail(errChatGPTNoProfile)
@@ -620,7 +621,7 @@ func (s *Server) testChatGPT(w http.ResponseWriter, r *http.Request, profileID *
 		model = p.Model
 	}
 	cfg := agent.NewChatGPTConfig(model, p.Proxy, sess)
-	cfg.ThinkingType, cfg.ReasoningEffort = thinking, effort
+	cfg.ThinkingType, cfg.ReasoningEffort, cfg.Daybreak = thinking, effort, daybreak
 	lat, reply, err := agent.TestConnection(r.Context(), cfg)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})

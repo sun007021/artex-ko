@@ -33,12 +33,15 @@ func (p *LLMProfile) NormalizeSubscription() error {
 		if p.Model == "" {
 			return ErrChatGPTModelRequired
 		}
+	case "":
+		p.Daybreak = false // Daybreak 는 ChatGPT 구독 프로필 전용이다
 	case AuthModeClaudeCode:
 		p.Model = strings.TrimSpace(p.Model)
 		p.ReasoningEffort = strings.ToLower(strings.TrimSpace(p.ReasoningEffort))
 		p.Format, p.BaseURL, p.APIKey, p.APIKeyHint = "anthropic", "", "", ""
 		p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, p.Streaming = 0, "", "", true
 		p.RatePerSecond, p.RatePerMinute, p.ThinkingType = 0, 0, ""
+		p.Daybreak = false
 		if !llmauth.ValidClaudeEffort(p.ReasoningEffort) {
 			return ErrBadClaudeEffort
 		}

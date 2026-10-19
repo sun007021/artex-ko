@@ -1498,6 +1498,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		ProfileID        *int64 `json:"profile_id"`         // 测已存 profile 时传入：api_key 为空则用它存的 key
 		Streaming        *bool  `json:"streaming"`          // 省略=流式，与保存 profile 时同一套默认
 		SessionHeaderKey string `json:"session_header_key"` // 非空=测试时也带该自定义会话头，值为一次性随机 session id
+		Daybreak         bool   `json:"daybreak"`           // chatgpt 구독 테스트에도 폼의 Daybreak 스위치를 그대로 적용한다
 		AuthMode         string `json:"auth_mode"`          // "chatgpt"=저장된 ChatGPT 구독 프로필(profile_id 필수)로 테스트, "claude-code"=claude CLI 로 테스트
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1505,7 +1506,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.AuthMode == db.AuthModeChatGPT {
-		s.testChatGPT(w, r, req.ProfileID, req.Model, req.ThinkingType, req.ReasoningEffort)
+		s.testChatGPT(w, r, req.ProfileID, req.Model, req.ThinkingType, req.ReasoningEffort, req.Daybreak)
 		return
 	}
 	if req.AuthMode == db.AuthModeClaudeCode {
