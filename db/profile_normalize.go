@@ -34,7 +34,8 @@ func (p *LLMProfile) NormalizeSubscription() error {
 			return ErrChatGPTModelRequired
 		}
 	case "":
-		p.Daybreak = false // Daybreak 는 ChatGPT 구독 프로필 전용이다
+		// API Key 프로필은 Responses API(access_programs) 형식에서만 Daybreak 를 쓴다.
+		p.Daybreak = p.Daybreak && p.Format == "openai-responses"
 	case AuthModeClaudeCode:
 		p.Model = strings.TrimSpace(p.Model)
 		p.ReasoningEffort = strings.ToLower(strings.TrimSpace(p.ReasoningEffort))

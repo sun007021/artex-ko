@@ -3532,7 +3532,7 @@
       "modelHint": "Tras iniciar sesión se carga la lista de modelos que puede usar su cuenta (use el botón de actualizar de la derecha para recargarla). También puede escribir un modelo que no esté en la lista.",
       "effortHint": "Se envía como reasoning.effort de la Responses API. Los niveles admitidos varían según el modelo, y un valor no admitido aparece como error en la prueba de conexión. Por defecto no se envía ningún valor.",
       "daybreakLabel": "Daybreak",
-      "daybreakHint": "Activa OpenAI Daybreak (Trusted Access for Cyber). Al activarlo, cada solicitud lleva access_programs.cyber=daybreak_blue. Solo tiene efecto si su cuenta está aprobada para Daybreak y un administrador del espacio de trabajo lo ha habilitado. Desactivado (por defecto) no se envía nada.",
+      "daybreakHint": "Activa OpenAI Daybreak (Trusted Access for Cyber). Al activarlo, cada solicitud lleva access_programs.cyber=daybreak_blue. Solo tiene efecto si su cuenta (en la API, un proyecto aprobado) está aprobada para Daybreak y un administrador lo ha habilitado. Desactivado (por defecto) no se envía nada. En los perfiles con API Key solo se aplica al formato openai-responses.",
       "daybreakAria": "Activar Daybreak",
       "toast": {
         "loginDone": "Inicio de sesión de ChatGPT completado: {email}",
@@ -3550,6 +3550,8 @@
       "intro": "Ejecuta en modo headless el CLI oficial de claude en el que usted mismo inició sesión (una suscripción Claude Pro/Max) para generar los turnos del modelo. ARTEX nunca lee, guarda ni reenvía credenciales de Claude y no modifica el ejecutable de claude. El bucle del agente, las herramientas, los permisos y los registros los gestiona el mismo código de ARTEX que en la ruta con API Key.",
       "modelPlaceholder": "Vacío = modelo predeterminado de claude · p. ej. sonnet, opus",
       "modelHint": "Se pasa a claude como --model tal cual. Escriba un alias (sonnet, opus, ...) o un nombre de modelo completo. Déjelo vacío para usar el modelo predeterminado de claude.",
+      "modelListTitle": "Ver los modelos disponibles",
+      "modelListNote": "Es una lista integrada (no se consulta en vivo). Un modelo que su cuenta no puede usar aparece como error en la prueba de conexión. Los modelos Mythos solo están disponibles para organizaciones y cuentas verificadas por Anthropic.",
       "effortHint": "Se pasa a claude como --effort (low, medium, high, xhigh, max). Un valor que el modelo no admite aparece como error en la prueba de conexión. Por defecto no se envía ningún valor.",
       "limits": "Este método no usa API Key, Base URL, el límite de tokens de salida (max_tokens), el modo sin streaming, la cabecera de sesión, los límites de velocidad (por segundo/minuto) ni el tipo de thinking, por lo que están ocultos. La longitud de la salida y la cantidad de razonamiento las decide claude. El número de procesos de claude que generan una respuesta a la vez está limitado globalmente por el límite de concurrencia de arriba.",
       "notice": {

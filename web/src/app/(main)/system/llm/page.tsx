@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import {
+  ListIcon,
   Loader2Icon,
   PlugZapIcon,
   PlusIcon,
@@ -53,6 +54,23 @@ function cooldownText(secs: number) {
 // 其余状态来自轮询的熔断记录（轮询关着时不会产生新记录，此时「正常」= 没有已知故障）。
 // 文案走 i18n（llmPage.health.*），所以把 t 传进来由调用方注入。
 type Health = { label: string; cls: string; hint?: string };
+
+// claude-code(구독) 경로의 모델 후보. `claude` CLI 에는 모델 목록 조회 명령이 없고 구독 토큰으로 API 의
+// /v1/models 를 부르는 것은 약관상 허용되지 않으므로, 실시간 조회 대신 내장 목록을 쓴다. 모델 이름은
+// `--model` 로 그대로 전달되며 목록에 없는 값도 직접 입력할 수 있다. 계정이 쓸 수 없는 모델은 연결 테스트에서
+// 오류로 드러난다.
+const CLAUDE_CODE_MODELS: { value: string; label: string }[] = [
+  { value: "claude-fable-5-1", label: "Fable 5.1" },
+  { value: "claude-mythos-5-1", label: "Mythos 5.1" },
+  { value: "claude-opus-5-5", label: "Opus 5.5" },
+  { value: "claude-sonnet-5-5", label: "Sonnet 5.5" },
+  { value: "claude-haiku-5-5", label: "Haiku 5.5" },
+  { value: "claude-fable-5", label: "Fable 5" },
+  { value: "claude-mythos-5", label: "Mythos 5" },
+  { value: "opus", label: "alias" },
+  { value: "sonnet", label: "alias" },
+  { value: "haiku", label: "alias" },
+];
 
 type AuthMode = "" | "chatgpt" | "claude-code";
 
@@ -367,6 +385,8 @@ function ProfileSheet({
   const claudeCode = authMode === "claude-code";
   // 구독 방식(ChatGPT/claude-code)은 API Key·Base URL·출력 상한·세션 헤더·비스트리밍을 쓰지 않는다.
   const subscription = chatgpt || claudeCode;
+  // Daybreak(access_programs)는 Responses API 에 정의돼 있어 ChatGPT 구독과 openai-responses 형식 API Key 프로필에서만 쓴다.
+  const daybreakApplies = chatgpt || (!subscription && format === "openai-responses");
 
   // quiet: 로그인 직후 자동 조회 — 목록 팝오버를 열지 않고 실패도 알리지 않는다.
   async function loadModels(quiet = false) {
@@ -496,6 +516,8 @@ function ProfileSheet({
       profileId,
       streaming,
       sessionHeaderKey.trim(),
+      "",
+      daybreakApplies && daybreak,
     );
   }
 
@@ -539,7 +561,7 @@ function ProfileSheet({
       session_header_key: subscription ? "" : sessionHeaderKey.trim(),
       retry,
       auth_mode: authMode,
-      daybreak: chatgpt && daybreak,
+      daybreak: daybreakApplies && daybreak,
     });
     if (!existingId) setCreatedId(id);
     setSavedAuthMode(authMode);
@@ -661,7 +683,40 @@ function ProfileSheet({
               />
               {/* modal: 这个 Popover 的内容被 portal 到 <body>，在 Sheet 的滚动锁之外，
                   不加 modal 时列表能渲染却滚不动。modal 让它自己持有最上层滚动锁。 */}
-              {!claudeCode && (
+              {claudeCode ? (
+                <Popover open={modelsOpen} onOpenChange={setModelsOpen} modal>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="shrink-0"
+                      title={t("claudeCode.modelListTitle")}
+                    >
+                      <ListIcon />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="max-h-80 w-72 gap-0 overflow-y-auto overscroll-contain p-1" align="end">
+                    {CLAUDE_CODE_MODELS.map((m) => (
+                      <button
+                        key={m.value}
+                        type="button"
+                        className="w-full shrink-0 rounded-md px-2 py-1.5 text-left font-mono text-xs hover:bg-accent hover:text-accent-foreground"
+                        onClick={() => {
+                          setModel(m.value);
+                          setModelsOpen(false);
+                        }}
+                      >
+                        {m.value}
+                        <span className="block font-sans text-muted-foreground">{m.label}</span>
+                      </button>
+                    ))}
+                    <p className="px-2 py-1.5 font-sans text-muted-foreground text-xs">
+                      {t("claudeCode.modelListNote")}
+                    </p>
+                  </PopoverContent>
+                </Popover>
+              ) : (
                 <Popover open={modelsOpen} onOpenChange={setModelsOpen} modal>
                   <PopoverTrigger asChild>
                     <Button
@@ -906,7 +961,7 @@ function ProfileSheet({
                 </SelectContent>
               </Select>
             </div>
-            {chatgpt && (
+            {daybreakApplies && (
               <div className="flex items-center justify-between gap-4 border-t pt-3">
                 <div className="grid gap-0.5">
                   <Label className="text-sm">{t("chatgpt.daybreakLabel")}</Label>
@@ -1174,7 +1229,7 @@ export default function LLMPage() {
                         </span>
                       )}
                       {p.proxy && <span className="truncate">{t("card.proxy", { proxy: p.proxy })}</span>}
-                      {p.auth_mode === "chatgpt" && p.daybreak && <span>{t("chatgpt.daybreakLabel")}</span>}
+                      {p.daybreak && <span>{t("chatgpt.daybreakLabel")}</span>}
                       {p.reasoning_effort && (
                         <span>
                           {t("card.thinking", {

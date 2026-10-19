@@ -3532,7 +3532,7 @@
       "modelHint": "After sign-in, the models your account can use are loaded (use the refresh button on the right to reload). You can also type a model that is not in the list.",
       "effortHint": "Sent as reasoning.effort of the Responses API. Supported levels differ by model, and an unsupported value shows up as an error in the connection test. The default sends no value.",
       "daybreakLabel": "Daybreak",
-      "daybreakHint": "Turns on OpenAI Daybreak (Trusted Access for Cyber). When on, every request carries access_programs.cyber=daybreak_blue. It only has an effect if your account is approved for Daybreak and a workspace admin has enabled it. When off (default), nothing is sent.",
+      "daybreakHint": "Turns on OpenAI Daybreak (Trusted Access for Cyber). When on, every request carries access_programs.cyber=daybreak_blue. It only has an effect if your account (for the API, an approved project) is approved for Daybreak and an admin has enabled it. When off (default), nothing is sent. For API-key profiles it applies only to the openai-responses format.",
       "daybreakAria": "Enable Daybreak",
       "toast": {
         "loginDone": "ChatGPT sign-in complete: {email}",
@@ -3550,6 +3550,8 @@
       "intro": "Runs the official claude CLI that you signed in to yourself (a Claude Pro/Max subscription) in headless mode to produce model turns. ARTEX never reads, stores or forwards Claude credentials and does not modify the claude binary. The agent loop, tools, permissions and records are handled by the same ARTEX code as the API Key path.",
       "modelPlaceholder": "Blank = claude default model · e.g. sonnet, opus",
       "modelHint": "Passed to claude as --model exactly as typed. Enter an alias (sonnet, opus, ...) or a full model name. Leave it blank to use claude's default model.",
+      "modelListTitle": "Show available models",
+      "modelListNote": "This is a built-in list (not fetched live). A model your account cannot use shows up as an error in the connection test. Mythos models are only available to organizations and accounts verified by Anthropic.",
       "effortHint": "Passed to claude as --effort (low, medium, high, xhigh, max). A value the model does not support shows up as an error in the connection test. The default sends no value.",
       "limits": "This method does not use API Key, Base URL, the output token cap (max_tokens), non-streaming mode, the session header, rate limits (per second/minute) or the thinking type, so they are hidden. Output length and thinking amount are decided by claude. The number of claude processes producing a model response at the same time is capped globally by the concurrency limit above.",
       "notice": {

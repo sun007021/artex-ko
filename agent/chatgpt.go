@@ -82,10 +82,6 @@ var chatGPTUnsupportedFields = []string{
 	"top_logprobs", "top_p", "truncation", "user", "previous_response_id",
 }
 
-// chatGPTDaybreakPrograms 는 Daybreak 를 켠 요청에 넣는 access_programs 값이다. Blue 만 지원한다
-// (Red 는 승인된 기업·조직 전용이다).
-const chatGPTDaybreakPrograms = `{"cyber":"daybreak_blue"}`
-
 // sanitizeChatGPTRequest 는 norma 가 만든 Responses 요청 본문을 구독 경로 규칙에 맞춘다
 // (unsupported 필드 제거, store/stream 고정, system→developer, function 도구 namespace 화).
 // wantStream 은 호출자가 원래 스트리밍을 요청했는지다(false 면 응답을 JSON 으로 모아 돌려준다).
@@ -104,7 +100,7 @@ func sanitizeChatGPTRequest(body []byte, daybreak bool) (out []byte, wantStream 
 	m["store"] = json.RawMessage("false")
 	m["stream"] = json.RawMessage("true")
 	if daybreak {
-		m["access_programs"] = json.RawMessage(chatGPTDaybreakPrograms)
+		setDaybreakProgram(m)
 	}
 	// 입력 항목 정리: 명시적 system 역할 입력은 거부된다 — 지침은 instructions 로 가야 하며, 혹시 남아 있으면
 	// 같은 의미의 developer 역할로 바꾼다. function_call 이력에는 도구가 속한 namespace 를 붙인다.

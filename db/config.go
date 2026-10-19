@@ -72,10 +72,10 @@ type LLMProfile struct {
 	// 구독 프로필은 APIKey 를 갖지 않는다. ChatGPT 의 OAuth 자격 증명은 llm_profile_oauth
 	// (ProfileOAuth)에 따로 저장되고, claude-code 는 자격 증명을 ARTEX 가 전혀 보관하지 않는다.
 	AuthMode string `json:"auth_mode"`
-	// Daybreak 는 ChatGPT 구독 프로필에서만 쓰는 OpenAI Daybreak(Trusted Access for Cyber) 스위치다.
-	// true 면 요청에 access_programs.cyber="daybreak_blue" 를 실어 보내고, false(기본)면 아무것도 보내지
-	// 않아 기존 동작과 같다. 계정(워크스페이스)이 Daybreak 승인을 받고 관리자가 켜 둔 경우에만 효과가 있다.
-	// 다른 인증 방식에서는 NormalizeSubscription 이 false 로 되돌린다.
+	// Daybreak 는 OpenAI Daybreak(Trusted Access for Cyber) 스위치다. ChatGPT 구독 프로필과 openai-responses
+	// 형식의 API Key 프로필에서만 쓴다. true 면 요청에 access_programs.cyber="daybreak_blue" 를 실어 보내고,
+	// false(기본)면 아무것도 보내지 않아 기존 동작과 같다. 계정(워크스페이스·프로젝트)이 Daybreak 승인을 받고
+	// 관리자가 켜 둔 경우에만 효과가 있다. 그 밖의 경우 NormalizeSubscription 이 false 로 되돌린다.
 	Daybreak bool `json:"daybreak"`
 }
 

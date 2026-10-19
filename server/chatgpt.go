@@ -90,7 +90,6 @@ func chatgptReady(sess *siwc.Session) bool {
 func (s *Server) profileAgentConfig(p *db.LLMProfile) (cfg agent.Config, ready bool) {
 	if p.AuthMode == db.AuthModeChatGPT {
 		cfg = agent.NewChatGPTConfig(p.Model, p.Proxy, s.chatgptSession(p))
-		cfg.Daybreak = p.Daybreak
 		ready = chatgptReady(s.chatgptSession(p))
 		// 구독 경로: 스트리밍 고정, 출력 상한(max_output_tokens)과 세션 헤더는 지원되지 않아
 		// 보내지 않는다(MaxTokens 는 0 = 상한 없음으로 둔다).
@@ -110,6 +109,7 @@ func (s *Server) profileAgentConfig(p *db.LLMProfile) (cfg agent.Config, ready b
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ThinkingType = p.ThinkingType
 	cfg.ReasoningEffort = p.ReasoningEffort
+	cfg.Daybreak = p.Daybreak // 정규화로 ChatGPT 구독·openai-responses 형식 외에는 이미 꺼져 있다
 	s.applyProfileRetry(&cfg, p)
 	return cfg, ready
 }

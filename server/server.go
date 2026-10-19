@@ -472,6 +472,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	var maxTokens int
 	var maxTokensField string
 	var sessionHeaderKey string
+	var daybreak bool
 	var retry db.RetryOverride
 	var prevChatGPT *db.LLMProfile // 기존 default 가 ChatGPT 구독이었다면 API Key 로 덮어쓰며 자격 증명을 폐기한다
 	if profs, _ := s.m.pg.ListProfiles(); profs != nil {
@@ -483,6 +484,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 				id, priority, poolExclude, streaming = p.ID, p.Priority, p.PoolExclude, p.Streaming
 				maxTokens, maxTokensField = p.MaxTokens, p.MaxTokensField
 				sessionHeaderKey = p.SessionHeaderKey
+				daybreak = p.Daybreak
 				retry = p.Retry
 				break
 			}
@@ -494,7 +496,8 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
 		Priority: priority, PoolExclude: poolExclude, Streaming: streaming,
 		MaxTokens: maxTokens, MaxTokensField: maxTokensField, SessionHeaderKey: sessionHeaderKey,
-		Retry: retry,
+		Daybreak: daybreak && format == "openai-responses",
+		Retry:    retry,
 	})
 	if err != nil {
 		return err
@@ -1498,7 +1501,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		ProfileID        *int64 `json:"profile_id"`         // 测已存 profile 时传入：api_key 为空则用它存的 key
 		Streaming        *bool  `json:"streaming"`          // 省略=流式，与保存 profile 时同一套默认
 		SessionHeaderKey string `json:"session_header_key"` // 非空=测试时也带该自定义会话头，值为一次性随机 session id
-		Daybreak         bool   `json:"daybreak"`           // chatgpt 구독 테스트에도 폼의 Daybreak 스위치를 그대로 적용한다
+		Daybreak         bool   `json:"daybreak"`           // 폼의 Daybreak 스위치를 테스트에도 그대로 적용한다(ChatGPT 구독, openai-responses 형식)
 		AuthMode         string `json:"auth_mode"`          // "chatgpt"=저장된 ChatGPT 구독 프로필(profile_id 필수)로 테스트, "claude-code"=claude CLI 로 테스트
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1518,6 +1521,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	// reasoning_effort/thinking field fails the test too (no false "test ok, run 400").
 	cfg.ThinkingType = req.ThinkingType
 	cfg.ReasoningEffort = req.ReasoningEffort
+	cfg.Daybreak = req.Daybreak // 저장 때와 같은 본문으로 테스트한다(openai-responses 형식에서만 보내진다)
 	// 同理，收发模式也照该 profile 的选择来：只支持其中一种通道的端点必须在这里就
 	// 暴露，而不是等会话里才发现"测试通过的配置根本跑不动"。
 	if req.Streaming != nil {
