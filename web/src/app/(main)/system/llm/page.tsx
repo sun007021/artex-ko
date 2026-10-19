@@ -296,6 +296,8 @@ function ProfileSheet({
   // 새 프로필을 로그인 때문에 먼저 저장했다면 그 id (시트를 닫기 전까지는 이후 저장이 갱신이 된다).
   const [createdId, setCreatedId] = React.useState<number | undefined>(undefined);
   const [chatgptStatus, setChatgptStatus] = React.useState<ChatGPTStatus | null>(null);
+  // ChatGPT 구독 전용: OpenAI Daybreak(Trusted Access for Cyber) 켜기/끄기. 기본은 꺼짐.
+  const [daybreak, setDaybreak] = React.useState(false);
   // 서버에 저장되어 있는 인증 방식. 로그인을 위해 먼저 저장하면 prop 의 profile 보다 앞서간다.
   const [savedAuthMode, setSavedAuthMode] = React.useState<AuthMode>("");
 
@@ -342,6 +344,7 @@ function ProfileSheet({
     setCw(String(profile?.context_window_k ?? 0));
     setThinkingType(fromStore(profile?.thinking_type));
     setEffort(fromStore(profile?.reasoning_effort));
+    setDaybreak(profile?.daybreak ?? false);
     setPriority(String(profile?.priority ?? 0));
     setPoolExclude(profile?.pool_exclude ?? false);
     setStreaming(profile?.streaming ?? true);
@@ -459,6 +462,7 @@ function ProfileSheet({
               true,
               "",
               "chatgpt",
+              daybreak,
             )
           : await testPlainConnection();
       showTestResult(r);
@@ -535,6 +539,7 @@ function ProfileSheet({
       session_header_key: subscription ? "" : sessionHeaderKey.trim(),
       retry,
       auth_mode: authMode,
+      daybreak: chatgpt && daybreak,
     });
     if (!existingId) setCreatedId(id);
     setSavedAuthMode(authMode);
@@ -901,6 +906,15 @@ function ProfileSheet({
                 </SelectContent>
               </Select>
             </div>
+            {chatgpt && (
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <div className="grid gap-0.5">
+                  <Label className="text-sm">{t("chatgpt.daybreakLabel")}</Label>
+                  <p className="text-muted-foreground text-xs">{t("chatgpt.daybreakHint")}</p>
+                </div>
+                <Switch checked={daybreak} onCheckedChange={setDaybreak} aria-label={t("chatgpt.daybreakAria")} />
+              </div>
+            )}
           </div>
 
           <ProfileRetryFields value={retry} onChange={setRetry} />
@@ -1160,6 +1174,7 @@ export default function LLMPage() {
                         </span>
                       )}
                       {p.proxy && <span className="truncate">{t("card.proxy", { proxy: p.proxy })}</span>}
+                      {p.auth_mode === "chatgpt" && p.daybreak && <span>{t("chatgpt.daybreakLabel")}</span>}
                       {p.reasoning_effort && (
                         <span>
                           {t("card.thinking", {

@@ -3531,6 +3531,9 @@
       "limits": "이 방식에서는 Base URL, API Key, 출력 토큰 상한(max_tokens), 비스트리밍, 세션 헤더를 쓰지 않아 숨겼습니다. 응답은 항상 스트리밍이며 출력 길이는 서버 기본값을 따릅니다.",
       "modelHint": "로그인하면 계정이 쓸 수 있는 모델 목록을 불러옵니다(오른쪽 새로고침 버튼으로 다시 조회). 목록에 없는 모델도 직접 입력할 수 있습니다.",
       "effortHint": "Responses API의 reasoning.effort로 전달됩니다. 지원하는 강도는 모델마다 다르며, 맞지 않는 값은 연결 테스트에서 오류로 드러납니다. 기본은 값을 보내지 않습니다.",
+      "daybreakLabel": "Daybreak",
+      "daybreakHint": "OpenAI Daybreak(Trusted Access for Cyber)을 켭니다. 켜면 모든 요청에 access_programs.cyber=daybreak_blue 가 실립니다. Daybreak 승인을 받은 계정이어야 하고, 워크스페이스 관리자가 켜 둔 경우에만 효과가 있습니다. 끄면(기본) 아무것도 보내지 않습니다.",
+      "daybreakAria": "Daybreak 켜기",
       "toast": {
         "loginDone": "ChatGPT 로그인 완료: {email}",
         "loginFailed": "ChatGPT 로그인 실패: {msg}",

@@ -3531,6 +3531,9 @@
       "limits": "此方式不使用 Base URL、API Key、输出 token 上限（max_tokens）、非流式和会话头，因此已隐藏。响应始终为流式，输出长度遵循服务器默认值。",
       "modelHint": "登录后会加载该账户可用的模型列表（可用右侧刷新按钮重新获取）。也可以手动输入列表中没有的模型。",
       "effortHint": "作为 Responses API 的 reasoning.effort 发送。各模型支持的强度不同，不匹配的值会在连接测试中报错。默认不发送该值。",
+      "daybreakLabel": "Daybreak",
+      "daybreakHint": "开启 OpenAI Daybreak（Trusted Access for Cyber）。开启后每个请求都会携带 access_programs.cyber=daybreak_blue。仅当账户已获 Daybreak 批准且工作区管理员已启用时才有效。关闭（默认）时不发送任何内容。",
+      "daybreakAria": "启用 Daybreak",
       "toast": {
         "loginDone": "ChatGPT 登录完成：{email}",
         "loginFailed": "ChatGPT 登录失败：{msg}",

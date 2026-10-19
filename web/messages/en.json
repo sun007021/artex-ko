@@ -3531,6 +3531,9 @@
       "limits": "This method does not use Base URL, API Key, the output token cap (max_tokens), non-streaming mode or the session header, so they are hidden. Responses always stream and the output length follows the server default.",
       "modelHint": "After sign-in, the models your account can use are loaded (use the refresh button on the right to reload). You can also type a model that is not in the list.",
       "effortHint": "Sent as reasoning.effort of the Responses API. Supported levels differ by model, and an unsupported value shows up as an error in the connection test. The default sends no value.",
+      "daybreakLabel": "Daybreak",
+      "daybreakHint": "Turns on OpenAI Daybreak (Trusted Access for Cyber). When on, every request carries access_programs.cyber=daybreak_blue. It only has an effect if your account is approved for Daybreak and a workspace admin has enabled it. When off (default), nothing is sent.",
+      "daybreakAria": "Enable Daybreak",
       "toast": {
         "loginDone": "ChatGPT sign-in complete: {email}",
         "loginFailed": "ChatGPT sign-in failed: {msg}",
