@@ -129,6 +129,8 @@ docker compose up -d          # artex 이미지 + postgres 를 함께 기동
 
 > 실행은 `./artex` 를 직접 돌리지 말고 `start.sh`(Windows 는 `start.bat`)로 하십시오. 이 스크립트는 종료 코드에 따라 프로그램을 다시 띄우는 감시자이고, UI 의 "원클릭 업데이트"도 이 스크립트가 처리합니다.
 
+> **한 번에 실행(macOS·Linux):** `./run-local.sh` 는 Postgres 컨테이너 시작(`docker compose up -d --wait postgres`, Docker Desktop 이 꺼져 있으면 macOS 에서 켬) → 위 빌드(`build.sh`) → `start.sh -addr 127.0.0.1:8787 -proxy 127.0.0.1:8788` 를 차례로 합니다. DB 주소는 `ARTEX_PG_DSN` 이 있으면 그 값을, 없으면 `.env` 의 `POSTGRES_*` 로 만들며, 호스트에서 5432 포트에 닿도록 `docker-compose.override.yml` 로 포트를 열어 두어야 합니다. 코드가 바뀌지 않았으면 `./run-local.sh --no-build`, 완전히 내릴 때는 `./run-local.sh stop`(서버 중지 + `docker compose down`, DB 볼륨은 유지)입니다.
+
 ---
 
 ## 설정
