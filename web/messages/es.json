@@ -3332,7 +3332,10 @@
       },
       "model": {
         "label": "Modelo",
-        "loadTitle": "Cargar los modelos disponibles desde la API"
+        "loadTitle": "Cargar los modelos disponibles desde la API",
+        "listButton": "Lista",
+        "placeholder": "Elija de la lista o escriba",
+        "hint": "Al introducir una API Key (o al abrir un perfil guardado) se carga la lista de modelos que puede usar esa clave. Haga clic en el campo del modelo o en el botón \"Lista\" para elegir uno, o escriba un modelo que no aparezca."
       },
       "baseUrl": {
         "label": "Base URL (opcional)"

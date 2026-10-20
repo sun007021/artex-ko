@@ -3332,7 +3332,10 @@
       },
       "model": {
         "label": "모델",
-        "loadTitle": "API에서 사용 가능한 모델 불러오기"
+        "loadTitle": "API에서 사용 가능한 모델 불러오기",
+        "listButton": "목록",
+        "placeholder": "목록에서 고르거나 직접 입력",
+        "hint": "API Key 를 입력하면(저장된 프로필은 열 때) 이 키로 쓸 수 있는 모델 목록을 불러옵니다. 모델 칸을 누르거나 「목록」 버튼으로 골라도 되고, 목록에 없는 모델은 직접 입력하세요."
       },
       "baseUrl": {
         "label": "Base URL (선택)"

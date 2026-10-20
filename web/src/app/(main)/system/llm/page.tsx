@@ -421,22 +421,31 @@ function ProfileSheet({
       return;
     }
     setLoadingModels(true);
-    setModels([]);
+    if (!quiet) setModels([]);
     try {
       const r = await api.fetchLLMModels(format, baseUrl, apiKey, proxy, profileId);
       if (r.ok && r.models && r.models.length > 0) {
         setModels(r.models.map((value) => ({ value })));
-        setModelsOpen(true);
-        toast.success(t("profile.toast.modelsLoaded", { n: r.models.length }));
-      } else {
+        if (!quiet) {
+          setModelsOpen(true);
+          toast.success(t("profile.toast.modelsLoaded", { n: r.models.length }));
+        }
+      } else if (!quiet) {
         toast.error(t("profile.toast.loadModelsFailed", { error: r.error ?? t("profile.toast.noModels") }));
       }
     } catch (e) {
-      toast.error(t("profile.toast.loadModelsError", { msg: (e as Error).message }));
+      if (!quiet) toast.error(t("profile.toast.loadModelsError", { msg: (e as Error).message }));
     } finally {
       setLoadingModels(false);
     }
   }
+
+  // 저장된 API Key 프로필을 열면(키가 저장돼 있으면) 모델 목록을 조용히 미리 불러온다. 입력한 키로는
+  // API Key 칸을 벗어날 때 불러온다(아래 onBlur).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 프로필·형식이 바뀔 때만 다시 불러온다(loadModels 는 매 렌더 새로 만들어짐)
+  React.useEffect(() => {
+    if (open && !subscription && profileId && keyHint) void loadModels(true);
+  }, [open, subscription, profileId, keyHint, format]);
 
   // 로그인이 연결되고 플랜 사용 권한도 허가된 순간 한 번, 계정의 모델 목록을 조용히 불러온다.
   const chatgptReady = chatgpt && chatgptStatus?.status === "connected" && chatgptStatus.plan_usage;
@@ -677,23 +686,27 @@ function ProfileSheet({
               <Input
                 id="p-model"
                 className="font-mono"
-                placeholder={claudeCode ? t("claudeCode.modelPlaceholder") : "claude-opus-4-8"}
+                placeholder={claudeCode ? t("claudeCode.modelPlaceholder") : t("profile.model.placeholder")}
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
+                // 브라우저 기본 자동 완성 목록: 칸을 누르거나 입력하면 불러온 모델(claude-code 는 내장 목록)이 펼쳐지고,
+                // 목록에 없는 값도 그대로 입력할 수 있다.
+                list="p-model-options"
+                autoComplete="off"
               />
+              <datalist id="p-model-options">
+                {(claudeCode ? CLAUDE_CODE_MODELS : models).map((m) => (
+                  <option key={m.value} value={m.value} label={m.label} />
+                ))}
+              </datalist>
               {/* modal: 这个 Popover 的内容被 portal 到 <body>，在 Sheet 的滚动锁之外，
                   不加 modal 时列表能渲染却滚不动。modal 让它自己持有最上层滚动锁。 */}
               {claudeCode ? (
                 <Popover open={modelsOpen} onOpenChange={setModelsOpen} modal>
                   <PopoverTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      className="shrink-0"
-                      title={t("claudeCode.modelListTitle")}
-                    >
+                    <Button type="button" variant="outline" className="shrink-0" title={t("claudeCode.modelListTitle")}>
                       <ListIcon />
+                      {t("profile.model.listButton")}
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="max-h-80 w-72 gap-0 overflow-y-auto overscroll-contain p-1" align="end">
@@ -722,13 +735,13 @@ function ProfileSheet({
                     <Button
                       type="button"
                       variant="outline"
-                      size="icon"
                       className="shrink-0"
                       disabled={loadingModels}
                       onClick={() => void loadModels()}
                       title={t("profile.model.loadTitle")}
                     >
                       {loadingModels ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
+                      {t("profile.model.listButton")}
                     </Button>
                   </PopoverTrigger>
                   {models.length > 0 && (
@@ -754,6 +767,7 @@ function ProfileSheet({
             </div>
             {chatgpt && <p className="text-muted-foreground text-xs">{t("chatgpt.modelHint")}</p>}
             {claudeCode && <p className="text-muted-foreground text-xs">{t("claudeCode.modelHint")}</p>}
+            {!subscription && <p className="text-muted-foreground text-xs">{t("profile.model.hint")}</p>}
           </div>
 
           {!subscription && (
@@ -805,6 +819,9 @@ function ProfileSheet({
                   placeholder={keyHint ? t("profile.apiKey.placeholderSet", { hint: keyHint }) : "sk-…"}
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
+                  onBlur={() => {
+                    if (apiKey.trim()) void loadModels(true);
+                  }}
                 />
               </div>
             </>

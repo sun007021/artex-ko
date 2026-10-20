@@ -3332,7 +3332,10 @@
       },
       "model": {
         "label": "模型",
-        "loadTitle": "从 API 加载可用模型"
+        "loadTitle": "从 API 加载可用模型",
+        "listButton": "列表",
+        "placeholder": "从列表选择或直接输入",
+        "hint": "输入 API Key 后（已保存的配置在打开时），会加载该 Key 可用的模型列表。点击模型输入框或「列表」按钮选择，列表中没有的模型可直接输入。"
       },
       "baseUrl": {
         "label": "Base URL（可选）"

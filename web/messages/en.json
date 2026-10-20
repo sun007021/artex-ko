@@ -3332,7 +3332,10 @@
       },
       "model": {
         "label": "Model",
-        "loadTitle": "Load available models from the API"
+        "loadTitle": "Load available models from the API",
+        "listButton": "List",
+        "placeholder": "Pick from the list or type",
+        "hint": "Once an API key is entered (or when a saved profile opens), the models this key can use are loaded. Click the model field or the \"List\" button to pick one, or type a model that is not listed."
       },
       "baseUrl": {
         "label": "Base URL (optional)"
