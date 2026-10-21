@@ -83,3 +83,6 @@ secrets.env
 # artex.exe 를 포그라운드로 띄울 때 리다이렉트한 런타임 로그
 /artex.out.log
 /artex.err.log
+
+# run-local.sh 상태(PID·로그·빌드 스탬프)
+/.run-local/
