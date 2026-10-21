@@ -3105,6 +3105,7 @@ export const llmProfiles: LLMProfile[] = [
     max_tokens: 0,
     max_tokens_field: "",
     auth_mode: "chatgpt",
+    daybreak: false,
     chatgpt: { status: "connected", email: "pentester@example.com", registered: true, plan_usage: true },
   },
 ];

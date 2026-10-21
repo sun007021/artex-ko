@@ -21,6 +21,26 @@ func TestNormalizeSubscription(t *testing.T) {
 		g.MaxTokensField != "" || g.SessionHeaderKey != "" || !g.Streaming || g.Model != "some-model" {
 		t.Fatalf("%+v", g)
 	}
+	// Daybreak 는 ChatGPT 구독에서 유지되고, claude-code 에서는 꺼진다.
+	dg := LLMProfile{AuthMode: AuthModeChatGPT, Model: "m", Daybreak: true}
+	if err := dg.NormalizeSubscription(); err != nil || !dg.Daybreak {
+		t.Fatalf("chatgpt 는 Daybreak 를 유지: %v %+v", err, dg)
+	}
+	// API Key 프로필은 Responses API 형식에서만 Daybreak 를 유지한다.
+	for format, want := range map[string]bool{"openai-responses": true, "openai": false, "anthropic": false} {
+		o := LLMProfile{AuthMode: "", Format: format, Model: "m", Daybreak: true}
+		_ = o.NormalizeSubscription()
+		if o.Daybreak != want {
+			t.Fatalf("API Key 프로필 format=%q Daybreak=%v, 기대 %v", format, o.Daybreak, want)
+		}
+	}
+	for _, mode := range []string{AuthModeClaudeCode} {
+		o := LLMProfile{AuthMode: mode, Model: "m", Daybreak: true}
+		_ = o.NormalizeSubscription()
+		if o.Daybreak {
+			t.Fatalf("auth_mode=%q 에서는 Daybreak 가 꺼져야 한다", mode)
+		}
+	}
 	empty := LLMProfile{AuthMode: AuthModeChatGPT, Model: "  "}
 	if err := empty.NormalizeSubscription(); !errors.Is(err, ErrChatGPTModelRequired) {
 		t.Fatalf("빈 모델: %v", err)

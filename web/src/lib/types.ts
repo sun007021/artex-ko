@@ -1062,6 +1062,8 @@ export interface LLMProfile {
   // 인증 방식: ""(API Key, 기본) | "chatgpt"(ChatGPT 구독, Sign in with ChatGPT) |
   // "claude-code"(사용자가 직접 로그인한 공식 claude CLI. 개인 로컬 사용 전용).
   auth_mode?: "" | "chatgpt" | "claude-code";
+  // chatgpt 프로필 전용: OpenAI Daybreak(Trusted Access for Cyber) 켜기. 기본 꺼짐(false).
+  daybreak?: boolean;
   // 구독 프로필의 연결 요약. 토큰은 서버가 절대 내려주지 않는다.
   chatgpt?: ChatGPTSummary;
 }

@@ -3332,7 +3332,10 @@
       },
       "model": {
         "label": "모델",
-        "loadTitle": "API에서 사용 가능한 모델 불러오기"
+        "loadTitle": "API에서 사용 가능한 모델 불러오기",
+        "listButton": "목록",
+        "placeholder": "목록에서 고르거나 직접 입력",
+        "hint": "API Key 를 입력하면(저장된 프로필은 열 때) 이 키로 쓸 수 있는 모델 목록을 불러옵니다. 모델 칸을 누르거나 「목록」 버튼으로 골라도 되고, 목록에 없는 모델은 직접 입력하세요."
       },
       "baseUrl": {
         "label": "Base URL (선택)"
@@ -3531,6 +3534,9 @@
       "limits": "이 방식에서는 Base URL, API Key, 출력 토큰 상한(max_tokens), 비스트리밍, 세션 헤더를 쓰지 않아 숨겼습니다. 응답은 항상 스트리밍이며 출력 길이는 서버 기본값을 따릅니다.",
       "modelHint": "로그인하면 계정이 쓸 수 있는 모델 목록을 불러옵니다(오른쪽 새로고침 버튼으로 다시 조회). 목록에 없는 모델도 직접 입력할 수 있습니다.",
       "effortHint": "Responses API의 reasoning.effort로 전달됩니다. 지원하는 강도는 모델마다 다르며, 맞지 않는 값은 연결 테스트에서 오류로 드러납니다. 기본은 값을 보내지 않습니다.",
+      "daybreakLabel": "Daybreak",
+      "daybreakHint": "OpenAI Daybreak(Trusted Access for Cyber)을 켭니다. 켜면 모든 요청에 access_programs.cyber=daybreak_blue 가 실립니다. Daybreak 승인을 받은 계정(API 는 승인된 프로젝트)이어야 하고, 관리자가 켜 둔 경우에만 효과가 있습니다. 끄면(기본) 아무것도 보내지 않습니다. API Key 프로필은 openai-responses 형식에서만 적용됩니다.",
+      "daybreakAria": "Daybreak 켜기",
       "toast": {
         "loginDone": "ChatGPT 로그인 완료: {email}",
         "loginFailed": "ChatGPT 로그인 실패: {msg}",
@@ -3547,6 +3553,8 @@
       "intro": "사용자가 직접 로그인한 공식 claude CLI(Claude Pro/Max 구독)를 헤드리스 모드로 구동해 모델 턴을 만듭니다. ARTEX 는 Claude 자격 증명을 읽거나 저장하거나 전달하지 않고 claude 바이너리를 수정하지 않습니다. 에이전트 루프·도구·권한·기록은 API Key 경로와 같은 ARTEX 코드가 처리합니다.",
       "modelPlaceholder": "비우면 claude 기본 모델 · 예: sonnet, opus",
       "modelHint": "claude 의 --model 로 그대로 전달됩니다. 별칭(sonnet, opus 등)이나 전체 모델 이름을 직접 입력하세요. 비우면 claude 의 기본 모델을 씁니다.",
+      "modelListTitle": "사용 가능한 모델 목록 보기",
+      "modelListNote": "내장 목록입니다(실시간 조회가 아닙니다). 계정이 쓸 수 없는 모델은 연결 테스트에서 오류로 드러납니다. Mythos 계열은 Anthropic 이 검증한 조직·계정에서만 쓸 수 있습니다.",
       "effortHint": "claude 의 --effort 로 전달됩니다(low, medium, high, xhigh, max). 모델이 지원하지 않는 값은 연결 테스트에서 오류로 드러납니다. 기본값은 값을 보내지 않습니다.",
       "limits": "이 방식은 API Key, Base URL, 출력 토큰 상한(max_tokens), 비스트리밍, 세션 헤더, 속도 제한(초당/분당), thinking 방식을 쓰지 않아 숨겨 두었습니다. 출력 길이와 사고량은 claude 가 정합니다. 동시에 모델 응답을 만드는 claude 프로세스 수는 위의 동시 실행 상한이 전역으로 제한합니다.",
       "notice": {

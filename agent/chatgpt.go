@@ -85,7 +85,10 @@ var chatGPTUnsupportedFields = []string{
 // sanitizeChatGPTRequest 는 norma 가 만든 Responses 요청 본문을 구독 경로 규칙에 맞춘다
 // (unsupported 필드 제거, store/stream 고정, system→developer, function 도구 namespace 화).
 // wantStream 은 호출자가 원래 스트리밍을 요청했는지다(false 면 응답을 JSON 으로 모아 돌려준다).
-func sanitizeChatGPTRequest(body []byte) (out []byte, wantStream bool, err error) {
+//
+// daybreak=true 면 최상위에 access_programs.cyber="daybreak_blue" 를 넣는다(OpenAI Daybreak). false 면 이 필드를
+// 건드리지 않는다.
+func sanitizeChatGPTRequest(body []byte, daybreak bool) (out []byte, wantStream bool, err error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil || m == nil {
 		return nil, false, fmt.Errorf("chatgpt: request body is not a JSON object")
@@ -96,6 +99,9 @@ func sanitizeChatGPTRequest(body []byte) (out []byte, wantStream bool, err error
 	}
 	m["store"] = json.RawMessage("false")
 	m["stream"] = json.RawMessage("true")
+	if daybreak {
+		setDaybreakProgram(m)
+	}
 	// 입력 항목 정리: 명시적 system 역할 입력은 거부된다 — 지침은 instructions 로 가야 하며, 혹시 남아 있으면
 	// 같은 의미의 developer 역할로 바꾼다. function_call 이력에는 도구가 속한 namespace 를 붙인다.
 	var items []map[string]json.RawMessage
@@ -127,6 +133,7 @@ type chatgptTransport struct {
 	base     http.RoundTripper
 	src      TokenSource
 	endpoint string // 허용되는 유일한 대상. 운영에서는 chatGPTResponsesEndpoint
+	daybreak bool   // true 면 요청마다 Daybreak 프로그램을 실어 보낸다(sanitizeChatGPTRequest)
 }
 
 func (t *chatgptTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -141,7 +148,7 @@ func (t *chatgptTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if err != nil {
 		return nil, err
 	}
-	body, wantStream, err := sanitizeChatGPTRequest(raw)
+	body, wantStream, err := sanitizeChatGPTRequest(raw, t.daybreak)
 	if err != nil {
 		return nil, err
 	}

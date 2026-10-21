@@ -3332,7 +3332,10 @@
       },
       "model": {
         "label": "模型",
-        "loadTitle": "从 API 加载可用模型"
+        "loadTitle": "从 API 加载可用模型",
+        "listButton": "列表",
+        "placeholder": "从列表选择或直接输入",
+        "hint": "输入 API Key 后（已保存的配置在打开时），会加载该 Key 可用的模型列表。点击模型输入框或「列表」按钮选择，列表中没有的模型可直接输入。"
       },
       "baseUrl": {
         "label": "Base URL（可选）"
@@ -3531,6 +3534,9 @@
       "limits": "此方式不使用 Base URL、API Key、输出 token 上限（max_tokens）、非流式和会话头，因此已隐藏。响应始终为流式，输出长度遵循服务器默认值。",
       "modelHint": "登录后会加载该账户可用的模型列表（可用右侧刷新按钮重新获取）。也可以手动输入列表中没有的模型。",
       "effortHint": "作为 Responses API 的 reasoning.effort 发送。各模型支持的强度不同，不匹配的值会在连接测试中报错。默认不发送该值。",
+      "daybreakLabel": "Daybreak",
+      "daybreakHint": "开启 OpenAI Daybreak（Trusted Access for Cyber）。开启后每个请求都会携带 access_programs.cyber=daybreak_blue。仅当账户（API 则为已批准的项目）已获 Daybreak 批准且管理员已启用时才有效。关闭（默认）时不发送任何内容。API Key 配置仅在 openai-responses 格式下生效。",
+      "daybreakAria": "启用 Daybreak",
       "toast": {
         "loginDone": "ChatGPT 登录完成：{email}",
         "loginFailed": "ChatGPT 登录失败：{msg}",
@@ -3547,6 +3553,8 @@
       "intro": "以无头模式运行您自己登录的官方 claude CLI（Claude Pro/Max 订阅）来生成模型回合。ARTEX 不会读取、保存或转发 Claude 凭据，也不会修改 claude 可执行文件。智能体循环、工具、权限和记录由与 API Key 路径相同的 ARTEX 代码处理。",
       "modelPlaceholder": "留空 = claude 默认模型 · 例如 sonnet、opus",
       "modelHint": "会原样作为 --model 传给 claude。可填别名（sonnet、opus 等）或完整模型名。留空则使用 claude 的默认模型。",
+      "modelListTitle": "查看可用模型列表",
+      "modelListNote": "这是内置列表（并非实时查询）。账户无法使用的模型会在连接测试中报错。Mythos 系列仅限经 Anthropic 验证的组织和账户使用。",
       "effortHint": "作为 --effort 传给 claude（low、medium、high、xhigh、max）。模型不支持的值会在连接测试中报错。默认不发送该值。",
       "limits": "此方式不使用 API Key、Base URL、输出 token 上限（max_tokens）、非流式、会话头、速率限制（每秒/每分钟）和 thinking 方式，因此已隐藏。输出长度和思考量由 claude 决定。同时生成模型回复的 claude 进程数由上方的并发上限全局限制。",
       "notice": {

@@ -976,6 +976,7 @@ export const api = {
     streaming = true, // 用该配置真实的收发模式来测，别让"流式能通、非流式不通"漏到会话里
     session_header_key = "", // 非空=测试请求也带该自定义会话头（值为一次性 session id）
     auth_mode: "" | "chatgpt" | "claude-code" = "", // "chatgpt"=已保存的 ChatGPT 구독 프로필(profile_id 필수)로 테스트, "claude-code"=claude CLI 로 테스트
+    daybreak = false, // chatgpt 구독 테스트에만 쓴다: 폼의 Daybreak 스위치를 그대로 적용
   ) =>
     // reply = 模型实际回复(已截断);一个字都不回的配置后端直接判失败
     post<{ ok: boolean; error?: string; latency_ms?: number; model?: string; reply?: string }>("/llm/test", {
@@ -990,6 +991,7 @@ export const api = {
       streaming,
       session_header_key,
       auth_mode,
+      daybreak,
     }),
   llmProfiles: () => get<{ profiles: LLMProfile[] }>("/llm/profiles").then((r) => arr(r.profiles)),
   saveLLMProfile: (p: {
@@ -1013,6 +1015,7 @@ export const api = {
     session_header_key?: string; // 非空=每次请求带该 HTTP 头，头值=当前会话 session id；""=不发送
     retry?: LLMRetryOverride; // 本配置的重试覆盖；各项留 0 = 跟随全局重试策略
     auth_mode?: "" | "chatgpt" | "claude-code"; // ""=API Key | "chatgpt"=ChatGPT 구독 | "claude-code"=claude CLI (서버가 형식·키·base_url 등을 정규화)
+    daybreak?: boolean; // chatgpt 전용: OpenAI Daybreak 켜기(기본 false). 다른 인증 방식에서는 서버가 끈다
   }) => post<{ id: number }>("/llm/profiles", p),
   deleteLLMProfile: (id: string) => del<{ deleted: number }>(`/llm/profiles/${id}`),
   activateLLMProfile: (id: string) => post<{ ok: boolean }>("/llm/profiles/active", { id: Number(id) }),

@@ -129,6 +129,8 @@ docker compose up -d          # artex 이미지 + postgres 를 함께 기동
 
 > 실행은 `./artex` 를 직접 돌리지 말고 `start.sh`(Windows 는 `start.bat`)로 하십시오. 이 스크립트는 종료 코드에 따라 프로그램을 다시 띄우는 감시자이고, UI 의 "원클릭 업데이트"도 이 스크립트가 처리합니다.
 
+> **한 번에 실행(macOS·Linux):** `./run-local.sh` 는 Postgres 컨테이너 시작(`docker compose up -d --wait postgres`, Docker Desktop 이 꺼져 있으면 macOS 에서 켬) → 위 빌드(`build.sh`) → `start.sh -addr 127.0.0.1:8787 -proxy 127.0.0.1:8788` 를 차례로 합니다. DB 주소는 `ARTEX_PG_DSN` 이 있으면 그 값을, 없으면 `.env` 의 `POSTGRES_*` 로 만들며, 호스트에서 5432 포트에 닿도록 `docker-compose.override.yml` 로 포트를 열어 두어야 합니다. 코드가 바뀌지 않았으면 `./run-local.sh --no-build`, 완전히 내릴 때는 `./run-local.sh stop`(서버 중지 + `docker compose down`, DB 볼륨은 유지)입니다.
+
 ---
 
 ## 설정
@@ -160,6 +162,7 @@ ChatGPT Plus/Pro 구독의 사용량으로 모델을 호출할 수 있습니다.
 1. 「시스템 → LLM」에서 「새로 만들기」를 누르고 **인증 방식**을 「ChatGPT 구독 (Plus/Pro)」으로 고릅니다.
 2. 이름과 모델을 입력하고 **「ChatGPT로 로그인」** 을 누릅니다. 설정이 먼저 저장되고, 새 탭에서 OpenAI 로그인·권한 승인 화면이 열립니다. 승인하면 브라우저가 `http://127.0.0.1:<포트>/auth/callback` 으로 돌아오고 ARTEX 가 자동으로 연결을 마칩니다(`<포트>` 는 ARTEX 에 접속한 포트이며 기본값은 8787). 권한 요청에는 「ChatGPT 플랜 사용량 사용」 승인이 포함되어야 합니다. 빠지면 카드에 「권한 필요」가 뜨고 「권한 다시 허용」으로 다시 로그인할 수 있습니다.
 3. 로그인되면 모델 칸 오른쪽의 새로고침 버튼이 **이 계정이 쓸 수 있는 모델 목록**을 불러옵니다(목록에 없는 모델도 직접 입력할 수 있습니다). 추론 강도(`reasoning.effort`)를 고르고 「연결 테스트」로 실제 호출을 확인한 뒤 저장합니다.
+4. (선택) **Daybreak**: OpenAI 의 Trusted Access for Cyber(Daybreak) 승인을 받은 계정이면 「Daybreak 켜기」 스위치로 요청마다 `access_programs.cyber=daybreak_blue` 를 보냅니다. 계정 승인과 워크스페이스 관리자의 활성화가 먼저 필요하며(승인되지 않은 계정에서는 효과가 없거나 오류가 날 수 있습니다), 끄면(기본) 아무것도 보내지 않습니다. Blue 만 지원하고 Red 는 지원하지 않습니다. 같은 스위치가 `openai-responses` 형식의 API Key 프로필에도 나타납니다(승인된 API 프로젝트의 키여야 합니다). 이 구독 경로가 해당 필드를 받아 주는지는 공식 문서에 명시되어 있지 않으므로 「연결 테스트」로 확인하십시오.
 4. 카드에서 「활성으로 설정」하거나 작업·에이전트에 이 설정을 지정합니다. 로그아웃하면 OpenAI 쪽 refresh token 폐기를 요청하고 이 서버의 토큰을 지웁니다.
 
 **ARTEX 서버와 브라우저가 다른 컴퓨터일 때 (원격 서버 / Docker)**

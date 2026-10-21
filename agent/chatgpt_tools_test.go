@@ -38,7 +38,7 @@ func TestSanitizeGroupsFunctionToolsInANamespace(t *testing.T) {
 	  {"type":"function","name":"run_cmd","description":"d","parameters":{"type":"object"}},
 	  {"type":"web_search"},
 	  {"type":"function","name":"read_file","parameters":{"type":"object"}}]}`
-	out, _, err := sanitizeChatGPTRequest([]byte(in))
+	out, _, err := sanitizeChatGPTRequest([]byte(in), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestSanitizeGroupsFunctionToolsInANamespace(t *testing.T) {
 
 func TestSanitizeWithoutToolsLeavesInputUntouched(t *testing.T) {
 	in := `{"model":"m","input":[{"type":"function_call","call_id":"c","name":"run_cmd","arguments":"{}"}]}`
-	out, _, err := sanitizeChatGPTRequest([]byte(in))
+	out, _, err := sanitizeChatGPTRequest([]byte(in), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestSanitizeStripsEveryDocumentedUnsupportedField(t *testing.T) {
 		body[k] = "x"
 	}
 	raw, _ := json.Marshal(body)
-	out, _, err := sanitizeChatGPTRequest(raw)
+	out, _, err := sanitizeChatGPTRequest(raw, false)
 	if err != nil {
 		t.Fatal(err)
 	}

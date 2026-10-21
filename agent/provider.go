@@ -88,6 +88,10 @@ type Config struct {
 	// TokenSource 는 AuthMode=chatgpt 일 때 필수다. Config 는 == 로 비교되므로(server 가
 	// 캐시된 구성과 비교한다) 포인터 구현이어야 한다.
 	TokenSource TokenSource
+	// Daybreak: true 면 모든 요청에 OpenAI Daybreak(Trusted Access for Cyber) 프로그램을 실어 보낸다
+	// (access_programs.cyber, daybreak.go). ChatGPT 구독과 openai-responses 형식 API Key 프로필에서만 쓰고,
+	// 다른 형식에서는 무시한다. false 면 아무것도 보내지 않는다.
+	Daybreak bool
 	// ClaudeBinary/ClaudeWorkDir 는 AuthMode=claude-code 일 때만 쓴다(claudecode.go). 둘 다
 	// 문자열이라 Config 는 계속 == 로 비교된다. 비어 있으면 PATH 의 "claude" / 임시 디렉터리.
 	ClaudeBinary  string
@@ -285,10 +289,11 @@ func (c Config) NewProvider() (llm.Provider, error) {
 		}
 		// 구독 토큰은 api.openai.com/v1 로만 간다 — 프로필의 base_url 은 무시한다.
 		// 세션 헤더 같은 비규격 헤더도 보내지 않는다.
-		client, err = chatGPTHTTPClient(c.Proxy, c.TokenSource)
+		client, err = chatGPTHTTPClient(c.Proxy, c.TokenSource, c.Daybreak)
 		baseURL, apiKey, format = ChatGPTBaseURL, chatGPTPlaceholderKey, llm.FormatOpenAIResponses
 	} else {
-		client, err = quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey)
+		// Daybreak 는 Responses API(access_programs) 에만 정의돼 있어 openai-responses 형식에서만 보낸다.
+		client, err = quotaAwareHTTPClientDaybreak(c.Proxy, c.SessionHeaderKey, c.Daybreak && format == llm.FormatOpenAIResponses)
 	}
 	if err != nil {
 		return nil, err
@@ -556,22 +561,32 @@ func ProxyHTTPClient(proxy string, timeout time.Duration) (*http.Client, error) 
 }
 
 func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) {
+	return quotaAwareHTTPClientDaybreak(proxy, sessionHeaderKey, false)
+}
+
+// quotaAwareHTTPClientDaybreak 는 daybreak=true 일 때 모든 요청 본문에 Daybreak 프로그램을 더한다(daybreakTransport).
+// quota 계층이 가장 바깥이므로 원본 캡처에도 실제로 나간 본문이 남는다.
+func quotaAwareHTTPClientDaybreak(proxy, sessionHeaderKey string, daybreak bool) (*http.Client, error) {
 	transport, err := baseTransport(proxy)
 	if err != nil {
 		return nil, err
 	}
-	return &http.Client{Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey)}}, nil
+	var base http.RoundTripper = transport
+	if daybreak {
+		base = daybreakTransport{base: transport}
+	}
+	return &http.Client{Transport: quotaAwareTransport{base: base, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey)}}, nil
 }
 
 // chatGPTHTTPClient is quotaAwareHTTPClient for subscription profiles: the quota
 // layer stays outermost (raw capture) and the
 // token-injecting transport sits between it and the network.
-func chatGPTHTTPClient(proxy string, src TokenSource) (*http.Client, error) {
+func chatGPTHTTPClient(proxy string, src TokenSource, daybreak bool) (*http.Client, error) {
 	transport, err := sharedTransport(proxy)
 	if err != nil {
 		return nil, err
 	}
-	inner := &chatgptTransport{base: transport, src: src, endpoint: chatGPTResponsesEndpoint}
+	inner := &chatgptTransport{base: transport, src: src, endpoint: chatGPTResponsesEndpoint, daybreak: daybreak}
 	return &http.Client{
 		Transport: quotaAwareTransport{base: inner},
 		// 리다이렉트를 따라가지 않는다 — 자격 증명이 다른 호스트로 갈 길을 아예 막는다.

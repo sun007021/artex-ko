@@ -109,6 +109,7 @@ func (s *Server) profileAgentConfig(p *db.LLMProfile) (cfg agent.Config, ready b
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ThinkingType = p.ThinkingType
 	cfg.ReasoningEffort = p.ReasoningEffort
+	cfg.Daybreak = p.Daybreak // 정규화로 ChatGPT 구독·openai-responses 형식 외에는 이미 꺼져 있다
 	s.applyProfileRetry(&cfg, p)
 	return cfg, ready
 }
@@ -600,7 +601,7 @@ func (s *Server) dropChatGPTCredentials(ctx context.Context, p *db.LLMProfile) {
 
 // testChatGPT 는 저장된 구독 프로필로 실제 최소 호출을 보내 연결을 확인한다. 폼의 모델·추론 강도를
 // 그대로 써서 "테스트는 통과했는데 실행은 거부"되는 차이를 없앤다.
-func (s *Server) testChatGPT(w http.ResponseWriter, r *http.Request, profileID *int64, model, thinking, effort string) {
+func (s *Server) testChatGPT(w http.ResponseWriter, r *http.Request, profileID *int64, model, thinking, effort string, daybreak bool) {
 	fail := func(msg string) { writeJSON(w, 200, map[string]any{"ok": false, "error": trMsg(msg)}) }
 	if s.m == nil || s.m.pg == nil || profileID == nil {
 		fail(errChatGPTNoProfile)
@@ -620,7 +621,7 @@ func (s *Server) testChatGPT(w http.ResponseWriter, r *http.Request, profileID *
 		model = p.Model
 	}
 	cfg := agent.NewChatGPTConfig(model, p.Proxy, sess)
-	cfg.ThinkingType, cfg.ReasoningEffort = thinking, effort
+	cfg.ThinkingType, cfg.ReasoningEffort, cfg.Daybreak = thinking, effort, daybreak
 	lat, reply, err := agent.TestConnection(r.Context(), cfg)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})

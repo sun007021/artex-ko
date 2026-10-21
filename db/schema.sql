@@ -477,6 +477,8 @@ END $$;
 -- 'chatgpt' 프로필은 항상 format='openai-responses' 이며 api_key 를 갖지 않는다
 -- (OAuth 자격 증명은 아래 llm_profile_oauth 에 둔다). 기본값 '' 이므로 기존 프로필은 그대로다.
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS auth_mode TEXT NOT NULL DEFAULT '';
+-- OpenAI Daybreak(Trusted Access for Cyber) 스위치. 'chatgpt' 프로필에서만 쓰며 기본은 꺼짐이라 기존 프로필은 그대로다.
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS daybreak BOOLEAN NOT NULL DEFAULT false;
 -- 'claude-code' = 사용자가 이 PC 에서 직접 로그인한 공식 claude CLI(Claude Code)를 헤드리스로 구동.
 -- 이 프로필은 항상 format='anthropic' 이고 api_key 를 갖지 않으며, 자격 증명은 DB 에 없다.
 ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_auth_mode_check;

@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import {
+  ListIcon,
   Loader2Icon,
   PlugZapIcon,
   PlusIcon,
@@ -53,6 +54,23 @@ function cooldownText(secs: number) {
 // 其余状态来自轮询的熔断记录（轮询关着时不会产生新记录，此时「正常」= 没有已知故障）。
 // 文案走 i18n（llmPage.health.*），所以把 t 传进来由调用方注入。
 type Health = { label: string; cls: string; hint?: string };
+
+// claude-code(구독) 경로의 모델 후보. `claude` CLI 에는 모델 목록 조회 명령이 없고 구독 토큰으로 API 의
+// /v1/models 를 부르는 것은 약관상 허용되지 않으므로, 실시간 조회 대신 내장 목록을 쓴다. 모델 이름은
+// `--model` 로 그대로 전달되며 목록에 없는 값도 직접 입력할 수 있다. 계정이 쓸 수 없는 모델은 연결 테스트에서
+// 오류로 드러난다.
+const CLAUDE_CODE_MODELS: { value: string; label: string }[] = [
+  { value: "claude-fable-5-1", label: "Fable 5.1" },
+  { value: "claude-mythos-5-1", label: "Mythos 5.1" },
+  { value: "claude-opus-5-5", label: "Opus 5.5" },
+  { value: "claude-sonnet-5-5", label: "Sonnet 5.5" },
+  { value: "claude-haiku-5-5", label: "Haiku 5.5" },
+  { value: "claude-fable-5", label: "Fable 5" },
+  { value: "claude-mythos-5", label: "Mythos 5" },
+  { value: "opus", label: "alias" },
+  { value: "sonnet", label: "alias" },
+  { value: "haiku", label: "alias" },
+];
 
 type AuthMode = "" | "chatgpt" | "claude-code";
 
@@ -296,6 +314,8 @@ function ProfileSheet({
   // 새 프로필을 로그인 때문에 먼저 저장했다면 그 id (시트를 닫기 전까지는 이후 저장이 갱신이 된다).
   const [createdId, setCreatedId] = React.useState<number | undefined>(undefined);
   const [chatgptStatus, setChatgptStatus] = React.useState<ChatGPTStatus | null>(null);
+  // ChatGPT 구독 전용: OpenAI Daybreak(Trusted Access for Cyber) 켜기/끄기. 기본은 꺼짐.
+  const [daybreak, setDaybreak] = React.useState(false);
   // 서버에 저장되어 있는 인증 방식. 로그인을 위해 먼저 저장하면 prop 의 profile 보다 앞서간다.
   const [savedAuthMode, setSavedAuthMode] = React.useState<AuthMode>("");
 
@@ -342,6 +362,7 @@ function ProfileSheet({
     setCw(String(profile?.context_window_k ?? 0));
     setThinkingType(fromStore(profile?.thinking_type));
     setEffort(fromStore(profile?.reasoning_effort));
+    setDaybreak(profile?.daybreak ?? false);
     setPriority(String(profile?.priority ?? 0));
     setPoolExclude(profile?.pool_exclude ?? false);
     setStreaming(profile?.streaming ?? true);
@@ -364,6 +385,8 @@ function ProfileSheet({
   const claudeCode = authMode === "claude-code";
   // 구독 방식(ChatGPT/claude-code)은 API Key·Base URL·출력 상한·세션 헤더·비스트리밍을 쓰지 않는다.
   const subscription = chatgpt || claudeCode;
+  // Daybreak(access_programs)는 Responses API 에 정의돼 있어 ChatGPT 구독과 openai-responses 형식 API Key 프로필에서만 쓴다.
+  const daybreakApplies = chatgpt || (!subscription && format === "openai-responses");
 
   // quiet: 로그인 직후 자동 조회 — 목록 팝오버를 열지 않고 실패도 알리지 않는다.
   async function loadModels(quiet = false) {
@@ -398,22 +421,31 @@ function ProfileSheet({
       return;
     }
     setLoadingModels(true);
-    setModels([]);
+    if (!quiet) setModels([]);
     try {
       const r = await api.fetchLLMModels(format, baseUrl, apiKey, proxy, profileId);
       if (r.ok && r.models && r.models.length > 0) {
         setModels(r.models.map((value) => ({ value })));
-        setModelsOpen(true);
-        toast.success(t("profile.toast.modelsLoaded", { n: r.models.length }));
-      } else {
+        if (!quiet) {
+          setModelsOpen(true);
+          toast.success(t("profile.toast.modelsLoaded", { n: r.models.length }));
+        }
+      } else if (!quiet) {
         toast.error(t("profile.toast.loadModelsFailed", { error: r.error ?? t("profile.toast.noModels") }));
       }
     } catch (e) {
-      toast.error(t("profile.toast.loadModelsError", { msg: (e as Error).message }));
+      if (!quiet) toast.error(t("profile.toast.loadModelsError", { msg: (e as Error).message }));
     } finally {
       setLoadingModels(false);
     }
   }
+
+  // 저장된 API Key 프로필을 열면(키가 저장돼 있으면) 모델 목록을 조용히 미리 불러온다. 입력한 키로는
+  // API Key 칸을 벗어날 때 불러온다(아래 onBlur).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 프로필·형식이 바뀔 때만 다시 불러온다(loadModels 는 매 렌더 새로 만들어짐)
+  React.useEffect(() => {
+    if (open && !subscription && profileId && keyHint) void loadModels(true);
+  }, [open, subscription, profileId, keyHint, format]);
 
   // 로그인이 연결되고 플랜 사용 권한도 허가된 순간 한 번, 계정의 모델 목록을 조용히 불러온다.
   const chatgptReady = chatgpt && chatgptStatus?.status === "connected" && chatgptStatus.plan_usage;
@@ -459,6 +491,7 @@ function ProfileSheet({
               true,
               "",
               "chatgpt",
+              daybreak,
             )
           : await testPlainConnection();
       showTestResult(r);
@@ -492,6 +525,8 @@ function ProfileSheet({
       profileId,
       streaming,
       sessionHeaderKey.trim(),
+      "",
+      daybreakApplies && daybreak,
     );
   }
 
@@ -535,6 +570,7 @@ function ProfileSheet({
       session_header_key: subscription ? "" : sessionHeaderKey.trim(),
       retry,
       auth_mode: authMode,
+      daybreak: daybreakApplies && daybreak,
     });
     if (!existingId) setCreatedId(id);
     setSavedAuthMode(authMode);
@@ -650,25 +686,62 @@ function ProfileSheet({
               <Input
                 id="p-model"
                 className="font-mono"
-                placeholder={claudeCode ? t("claudeCode.modelPlaceholder") : "claude-opus-4-8"}
+                placeholder={claudeCode ? t("claudeCode.modelPlaceholder") : t("profile.model.placeholder")}
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
+                // 브라우저 기본 자동 완성 목록: 칸을 누르거나 입력하면 불러온 모델(claude-code 는 내장 목록)이 펼쳐지고,
+                // 목록에 없는 값도 그대로 입력할 수 있다.
+                list="p-model-options"
+                autoComplete="off"
               />
+              <datalist id="p-model-options">
+                {(claudeCode ? CLAUDE_CODE_MODELS : models).map((m) => (
+                  <option key={m.value} value={m.value} label={m.label} />
+                ))}
+              </datalist>
               {/* modal: 这个 Popover 的内容被 portal 到 <body>，在 Sheet 的滚动锁之外，
                   不加 modal 时列表能渲染却滚不动。modal 让它自己持有最上层滚动锁。 */}
-              {!claudeCode && (
+              {claudeCode ? (
+                <Popover open={modelsOpen} onOpenChange={setModelsOpen} modal>
+                  <PopoverTrigger asChild>
+                    <Button type="button" variant="outline" className="shrink-0" title={t("claudeCode.modelListTitle")}>
+                      <ListIcon />
+                      {t("profile.model.listButton")}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="max-h-80 w-72 gap-0 overflow-y-auto overscroll-contain p-1" align="end">
+                    {CLAUDE_CODE_MODELS.map((m) => (
+                      <button
+                        key={m.value}
+                        type="button"
+                        className="w-full shrink-0 rounded-md px-2 py-1.5 text-left font-mono text-xs hover:bg-accent hover:text-accent-foreground"
+                        onClick={() => {
+                          setModel(m.value);
+                          setModelsOpen(false);
+                        }}
+                      >
+                        {m.value}
+                        <span className="block font-sans text-muted-foreground">{m.label}</span>
+                      </button>
+                    ))}
+                    <p className="px-2 py-1.5 font-sans text-muted-foreground text-xs">
+                      {t("claudeCode.modelListNote")}
+                    </p>
+                  </PopoverContent>
+                </Popover>
+              ) : (
                 <Popover open={modelsOpen} onOpenChange={setModelsOpen} modal>
                   <PopoverTrigger asChild>
                     <Button
                       type="button"
                       variant="outline"
-                      size="icon"
                       className="shrink-0"
                       disabled={loadingModels}
                       onClick={() => void loadModels()}
                       title={t("profile.model.loadTitle")}
                     >
                       {loadingModels ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
+                      {t("profile.model.listButton")}
                     </Button>
                   </PopoverTrigger>
                   {models.length > 0 && (
@@ -694,6 +767,7 @@ function ProfileSheet({
             </div>
             {chatgpt && <p className="text-muted-foreground text-xs">{t("chatgpt.modelHint")}</p>}
             {claudeCode && <p className="text-muted-foreground text-xs">{t("claudeCode.modelHint")}</p>}
+            {!subscription && <p className="text-muted-foreground text-xs">{t("profile.model.hint")}</p>}
           </div>
 
           {!subscription && (
@@ -745,6 +819,9 @@ function ProfileSheet({
                   placeholder={keyHint ? t("profile.apiKey.placeholderSet", { hint: keyHint }) : "sk-…"}
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
+                  onBlur={() => {
+                    if (apiKey.trim()) void loadModels(true);
+                  }}
                 />
               </div>
             </>
@@ -901,6 +978,15 @@ function ProfileSheet({
                 </SelectContent>
               </Select>
             </div>
+            {daybreakApplies && (
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <div className="grid gap-0.5">
+                  <Label className="text-sm">{t("chatgpt.daybreakLabel")}</Label>
+                  <p className="text-muted-foreground text-xs">{t("chatgpt.daybreakHint")}</p>
+                </div>
+                <Switch checked={daybreak} onCheckedChange={setDaybreak} aria-label={t("chatgpt.daybreakAria")} />
+              </div>
+            )}
           </div>
 
           <ProfileRetryFields value={retry} onChange={setRetry} />
@@ -1160,6 +1246,7 @@ export default function LLMPage() {
                         </span>
                       )}
                       {p.proxy && <span className="truncate">{t("card.proxy", { proxy: p.proxy })}</span>}
+                      {p.daybreak && <span>{t("chatgpt.daybreakLabel")}</span>}
                       {p.reasoning_effort && (
                         <span>
                           {t("card.thinking", {
